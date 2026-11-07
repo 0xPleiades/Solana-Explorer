@@ -1,41 +1,35 @@
-import { AccountAddressRow, AccountBalanceRow, AccountHeader } from '@components/common/Account';
+import { AccountAddressRow, AccountBalanceRow } from '@components/common/Account';
 import { Address } from '@components/common/Address';
-import { TableCardBody } from '@components/common/TableCardBody';
-import { Account, useFetchAccountInfo } from '@providers/accounts';
+import { useRefreshAccount } from '@entities/account';
+import { AccountCard } from '@features/account';
+import { Account } from '@providers/accounts';
 import { NonceAccount } from '@validators/accounts/nonce';
 import React from 'react';
 
+import { type KeyValueRow, KeyValueRows } from '@/app/shared/ui/key-value';
+
 export function NonceAccountSection({ account, nonceAccount }: { account: Account; nonceAccount: NonceAccount }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
+
+    const rows: KeyValueRow[] = [
+        { label: 'Authority', value: <Address pubkey={nonceAccount.info.authority} raw link /> },
+        { label: 'Blockhash', value: <code>{nonceAccount.info.blockhash}</code> },
+        {
+            label: 'Fee',
+            value: `${nonceAccount.info.feeCalculator.lamportsPerSignature} lamports per signature`,
+        },
+    ];
+
     return (
-        <div className="card">
-            <AccountHeader title="Nonce Account" refresh={() => refresh(account.pubkey, 'parsed')} />
-
-            <TableCardBody>
-                <AccountAddressRow account={account} />
-                <AccountBalanceRow account={account} />
-
-                <tr>
-                    <td>Authority</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={nonceAccount.info.authority} alignRight raw link />
-                    </td>
-                </tr>
-
-                <tr>
-                    <td>Blockhash</td>
-                    <td className="text-lg-end">
-                        <code>{nonceAccount.info.blockhash}</code>
-                    </td>
-                </tr>
-
-                <tr>
-                    <td>Fee</td>
-                    <td className="text-lg-end">
-                        {nonceAccount.info.feeCalculator.lamportsPerSignature} lamports per signature
-                    </td>
-                </tr>
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title="Nonce Account"
+            account={account}
+            analyticsSection="nonce_account_section"
+            refresh={() => refresh(account.pubkey, 'parsed')}
+        >
+            <AccountAddressRow account={account} />
+            <AccountBalanceRow account={account} />
+            <KeyValueRows rows={rows} />
+        </AccountCard>
     );
 }

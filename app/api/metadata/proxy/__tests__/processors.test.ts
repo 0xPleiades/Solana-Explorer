@@ -1,0 +1,107 @@
+import { describe, expect, it } from 'vitest';
+
+import { unwrap } from '@/app/shared/lib/result';
+
+import { processBinary, processJson, processTextAsJson } from '../feature/processors';
+
+function createMockResponse(text: string, headers: Headers = new Headers()): Response {
+    // Cast: tests only stub the surface of Response that processTextAsJson touches.
+    return {
+        headers,
+        text: async () => text,
+    } as unknown as Response;
+}
+
+describe('processTextAsJson', () => {
+    it('should parse valid JSON text', async () => {
+        const jsonText = '{"name": "Test", "value": 123}';
+        const response = createMockResponse(jsonText);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.data).toEqual({ name: 'Test', value: 123 });
+    });
+
+    it('should handle JSON with trailing newline', async () => {
+        const jsonText = '{"name": "Test"}\n';
+        const response = createMockResponse(jsonText);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.data).toEqual({ name: 'Test' });
+    });
+
+    it('should handle JSON with leading/trailing whitespace', async () => {
+        const jsonText = '  \n{"name": "Test"}\n  ';
+        const response = createMockResponse(jsonText);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.data).toEqual({ name: 'Test' });
+    });
+
+    it('should handle JSON with newlines and tabs inside (pretty-printed)', async () => {
+        const jsonText = `{
+\t"name": "World Liberty Financial USD",
+\t"symbol": "USD1",
+\t"description": "The US Dollar upgraded for a new era of finance.",
+\t"image": "https://example.com/logo.png"
+}`;
+        const response = createMockResponse(jsonText);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.data).toEqual({
+            description: 'The US Dollar upgraded for a new era of finance.',
+            image: 'https://example.com/logo.png',
+            name: 'World Liberty Financial USD',
+            symbol: 'USD1',
+        });
+    });
+
+    it('should handle JSON with CRLF line endings', async () => {
+        const jsonText = '{\r\n"name": "Test"\r\n}\r\n';
+        const response = createMockResponse(jsonText);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.data).toEqual({ name: 'Test' });
+    });
+
+    it('should preserve response headers', async () => {
+        const headers = new Headers({
+            'Cache-Control': 'max-age=3600',
+            'Content-Type': 'text/plain',
+        });
+        const response = createMockResponse('{"test": true}', headers);
+
+        const result = unwrap(await processTextAsJson(response));
+
+        expect(result.headers.get('Cache-Control')).toBe('max-age=3600');
+        expect(result.headers.get('Content-Type')).toBe('text/plain');
+    });
+
+    it('should return a 415 malformed-json error for invalid JSON', async () => {
+        const invalidJson = 'not valid json';
+        const response = createMockResponse(invalidJson);
+
+        const [error] = await processTextAsJson(response);
+
+        expect(error).toMatchObject({ code: 'malformed-json', status: 415 });
+    });
+});
+
+describe('decode faults', () => {
+    it.each([
+        ['processBinary', processBinary],
+        ['processJson', processJson],
+        ['processTextAsJson', processTextAsJson],
+    ])('should return a 500 decode-failed error when %s gets a body it cannot read', async (_, process) => {
+        const response = new Response('{}');
+        await response.text();
+
+        const [error] = await process(response);
+
+        expect(error).toMatchObject({ code: 'decode-failed', status: 500 });
+    });
+});

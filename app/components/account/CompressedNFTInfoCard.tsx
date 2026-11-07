@@ -1,3 +1,4 @@
+import { Badge } from '@components/shared/ui/badge';
 import { Account, useAccountInfo, useFetchAccountInfo } from '@providers/accounts';
 import { ConcurrentMerkleTreeAccount, MerkleTree } from '@solana/spl-account-compression';
 import { PublicKey } from '@solana/web3.js';
@@ -10,9 +11,11 @@ import {
     useCompressedNft,
     useCompressedNftProof,
 } from '@/app/providers/compressed-nft';
+import { toBuffer } from '@/app/shared/lib/bytes';
+import { type KeyValueRow, KeyValueRows } from '@/app/shared/ui/key-value';
+import { OverviewCard } from '@/app/shared/ui/OverviewCard';
 
 import { Address } from '../common/Address';
-import { TableCardBody } from '../common/TableCardBody';
 
 export function CompressedNFTInfoCard({ account, onNotFound }: { account?: Account; onNotFound: () => never }) {
     const { url } = useCluster();
@@ -25,7 +28,13 @@ export function CompressedNFTInfoCard({ account, onNotFound }: { account?: Accou
     return onNotFound();
 }
 
-function DasCompressionInfoCard({ proof, compressedNft }: { proof: CompressedNftProof; compressedNft: CompressedNft }) {
+export function DasCompressionInfoCard({
+    proof,
+    compressedNft,
+}: {
+    proof: CompressedNftProof;
+    compressedNft: CompressedNft;
+}) {
     const compressedInfo = compressedNft.compression;
     const fetchAccountInfo = useFetchAccountInfo();
     const treeAccountInfo = useAccountInfo(compressedInfo.tree);
@@ -44,88 +53,65 @@ function DasCompressionInfoCard({ proof, compressedNft }: { proof: CompressedNft
     });
     const canopyDepth =
         treeAccountInfo && treeAccountInfo.data && treeAccountInfo.data.data.raw
-            ? ConcurrentMerkleTreeAccount.fromBuffer(treeAccountInfo.data.data.raw).getCanopyDepth()
+            ? ConcurrentMerkleTreeAccount.fromBuffer(toBuffer(treeAccountInfo.data.data.raw)).getCanopyDepth()
             : 0;
     const proofSize = proof.proof.length - canopyDepth;
-    return (
-        <div className="card">
-            <div className="card-header align-items-center">
-                <h3 className="card-header-title">Compression Info</h3>
-            </div>
 
-            <TableCardBody>
-                <tr>
-                    <td>Concurrent Merkle Tree</td>
-                    <td>
-                        <Address pubkey={treeAddress} alignRight link raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Current Tree Root {getVerifiedProofPill(proofVerified)}</td>
-                    <td>
-                        <Address pubkey={root} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Proof Size {getProofSizePill(proofSize)}</td>
-                    <td className="text-lg-end">{proofSize}</td>
-                </tr>
-                <tr>
-                    <td>Leaf Number</td>
-                    <td className="text-lg-end">{compressedInfo.leaf_id}</td>
-                </tr>
-                <tr>
-                    <td>Sequence Number of Last Update</td>
-                    <td className="text-lg-end">{compressedInfo.seq}</td>
-                </tr>
-                <tr>
-                    <td>Compressed Nft Hash</td>
-                    <td>
-                        <Address pubkey={new PublicKey(compressedInfo.asset_hash)} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Creators Hash</td>
-                    <td>
-                        <Address pubkey={new PublicKey(compressedInfo.creator_hash)} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Metadata Hash</td>
-                    <td>
-                        <Address pubkey={new PublicKey(compressedInfo.data_hash)} alignRight raw />
-                    </td>
-                </tr>
-            </TableCardBody>
-        </div>
+    const rows: KeyValueRow[] = [
+        { label: 'Concurrent Merkle Tree', value: <Address pubkey={treeAddress} link raw /> },
+        {
+            label: <>Current Tree Root {getVerifiedProofPill(proofVerified)}</>,
+            value: <Address pubkey={root} raw />,
+        },
+        { label: <>Proof Size {getProofSizePill(proofSize)}</>, value: proofSize },
+        { label: 'Leaf Number', value: compressedInfo.leaf_id },
+        { label: 'Sequence Number of Last Update', value: compressedInfo.seq },
+        { label: 'Compressed Nft Hash', value: <Address pubkey={new PublicKey(compressedInfo.asset_hash)} raw /> },
+        { label: 'Creators Hash', value: <Address pubkey={new PublicKey(compressedInfo.creator_hash)} raw /> },
+        { label: 'Metadata Hash', value: <Address pubkey={new PublicKey(compressedInfo.data_hash)} raw /> },
+    ];
+
+    return (
+        <OverviewCard title="Compression Info">
+            <KeyValueRows rows={rows} />
+        </OverviewCard>
     );
 }
 
 function getVerifiedProofPill(verified: boolean) {
     return (
-        <div className={'d-inline-flex align-items-center ms-2'}>
-            <span className={`badge badge-pill bg-dark ${verified ? '' : 'bg-danger-soft'}`}>{`Proof ${
-                verified ? '' : 'Not'
-            } Verified`}</span>
+        <div className="ml-1.5 inline-flex items-center">
+            {verified ? (
+                <Badge ui="dashkit" variant="dark" tone="solid">
+                    Proof Verified
+                </Badge>
+            ) : (
+                <Badge ui="dashkit" variant="danger">
+                    Proof Not Verified
+                </Badge>
+            )}
         </div>
     );
 }
 
 function getProofSizePill(proofSize: number) {
-    let text: string;
-    let color = 'bg-dark';
-    if (proofSize == 0) {
-        text = 'No Proof Required';
-    } else if (proofSize > 8) {
-        text = `Composability Hazard`;
-        color = 'bg-danger-soft';
-    } else {
-        return <div />;
+    if (proofSize === 0) {
+        return (
+            <div className="ml-1.5 inline-flex items-center">
+                <Badge ui="dashkit" variant="dark" tone="solid">
+                    No Proof Required
+                </Badge>
+            </div>
+        );
     }
-
-    return (
-        <div className={'d-inline-flex align-items-center ms-2'}>
-            <span className={`badge badge-pill ${color}`}>{text}</span>
-        </div>
-    );
+    if (proofSize > 8) {
+        return (
+            <div className="ml-1.5 inline-flex items-center">
+                <Badge ui="dashkit" variant="danger">
+                    Composability Hazard
+                </Badge>
+            </div>
+        );
+    }
+    return <div />;
 }

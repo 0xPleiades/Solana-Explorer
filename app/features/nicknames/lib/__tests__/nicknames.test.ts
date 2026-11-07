@@ -1,0 +1,117 @@
+// @vitest-environment jsdom
+
+/**
+ * Tests for nickname localStorage utility functions
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import { getNickname, removeNickname, setNickname } from '../nicknames';
+
+describe('nicknames', () => {
+    describe('getNickname', () => {
+        it('should return null when no nickname exists', () => {
+            const result = getNickname('TestAddress123');
+            expect(result).toBeNull();
+        });
+
+        it('should return the nickname when it exists', () => {
+            // Setup: add nickname to localStorage
+            localStorage.setItem(
+                'solana-explorer-nicknames',
+                JSON.stringify({
+                    TestAddress123: 'My Wallet',
+                }),
+            );
+
+            const result = getNickname('TestAddress123');
+            expect(result).toBe('My Wallet');
+        });
+
+        it('should handle invalid JSON gracefully', () => {
+            // Setup: corrupt localStorage data
+            localStorage.setItem('solana-explorer-nicknames', 'invalid-json');
+
+            const result = getNickname('TestAddress123');
+            expect(result).toBeNull();
+        });
+    });
+
+    describe('setNickname', () => {
+        it('should save a nickname to localStorage', () => {
+            setNickname('TestAddress123', 'My Wallet');
+
+            // Verify it was saved correctly
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['TestAddress123']).toBe('My Wallet');
+        });
+
+        it('should trim whitespace from nicknames', () => {
+            setNickname('TestAddress123', '  My Wallet  ');
+
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['TestAddress123']).toBe('My Wallet');
+        });
+
+        it('should remove nickname when empty string provided', () => {
+            // Setup: save a nickname
+            setNickname('TestAddress123', 'My Wallet');
+
+            // Update with empty/whitespace-only string
+            setNickname('TestAddress123', '   ');
+
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['TestAddress123']).toBeUndefined();
+        });
+
+        it('should preserve other nicknames', () => {
+            setNickname('Address1', 'Wallet 1');
+            setNickname('Address2', 'Wallet 2');
+
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['Address1']).toBe('Wallet 1');
+            expect(stored['Address2']).toBe('Wallet 2');
+        });
+
+        it('should truncate nicknames longer than MAX_NICKNAME_LENGTH', () => {
+            const longNickname = 'This is a very long nickname that exceeds the maximum allowed length';
+            setNickname('TestAddress123', longNickname);
+
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['TestAddress123']).toBe(longNickname.slice(0, 32));
+            expect(stored['TestAddress123'].length).toBe(32);
+        });
+    });
+
+    describe('removeNickname', () => {
+        it('should preserve other nicknames when removing one', () => {
+            // Setup: save multiple nicknames
+            setNickname('Address1', 'Wallet 1');
+            setNickname('Address2', 'Wallet 2');
+
+            removeNickname('Address1');
+
+            const stored = JSON.parse(localStorage.getItem('solana-explorer-nicknames') || '{}');
+            expect(stored['Address1']).toBeUndefined();
+            expect(stored['Address2']).toBe('Wallet 2');
+        });
+    });
+
+    it.each([
+        ['setNickname', () => setNickname('TestAddress123', 'My Wallet')],
+        ['removeNickname', () => removeNickname('TestAddress123')],
+    ])('should dispatch nicknameUpdated event from %s', (_, update) => {
+        const listener = vi.fn();
+        window.addEventListener('nicknameUpdated', listener);
+
+        update();
+
+        // Verify event was dispatched with correct address
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                detail: { address: 'TestAddress123' },
+            }),
+        );
+
+        window.removeEventListener('nicknameUpdated', listener);
+    });
+});

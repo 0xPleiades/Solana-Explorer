@@ -1,21 +1,28 @@
+import { CompressedNftAccountHeader } from '@components/account/CompressedNftCard';
 import { MetaplexNFTHeader } from '@components/account/MetaplexNFTHeader';
-import { isNFTokenAccount } from '@components/account/nftoken/isNFTokenAccount';
-import { NFTokenAccountHeader } from '@components/account/nftoken/NFTokenAccountHeader';
-import { Identicon } from '@components/common/Identicon';
-import { Account, isTokenProgramData, TokenProgramData, useMintAccountInfo } from '@providers/accounts';
-import isMetaplexNFT from '@providers/accounts/utils/isMetaplexNFT';
+import { useDasImage } from '@entities/digital-asset';
+import { isMetaplexNFT } from '@entities/nft';
+import { STAKE_PROGRAM_LABEL } from '@explorer/parsers';
+import { NftokenAccountHeader, parseNftokenAccount } from '@features/nftoken';
+import {
+    Account,
+    isTokenProgramData,
+    isUpgradeableLoaderAccountData,
+    TokenProgramData,
+    useMintAccountInfo,
+} from '@providers/accounts';
+import { useMetadataJsonLink } from '@providers/compressed-nft';
+import { MintAccountInfo } from '@validators/accounts/token';
 import { MetadataPointer, TokenMetadata } from '@validators/accounts/token-extension';
 import React, { Suspense, useMemo } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { create } from 'superstruct';
 
-import { CompressedNftAccountHeader } from '@/app/components/account/CompressedNftCard';
-import { getProxiedUri } from '@/app/features/metadata/utils';
-import { useMetadataJsonLink } from '@/app/providers/compressed-nft';
-import { FullTokenInfo, isRedactedTokenAddress } from '@/app/utils/token-info';
-import { MintAccountInfo } from '@/app/validators/accounts/token';
-
-const IDENTICON_WIDTH = 64;
+import { dasImageAddress } from '@/app/components/account/das-image-address';
+import { ProgramHeader } from '@/app/components/shared/account/ProgramHeader';
+import { ProxiedImage } from '@/app/features/metadata';
+import { getProxiedUri } from '@/app/shared/lib/metadata-proxy';
+import { type FullTokenInfo, isRedactedTokenAddress } from '@/app/utils/token-info';
 
 export function AccountHeader({
     address,
@@ -31,18 +38,43 @@ export function AccountHeader({
     const mintInfo = useMintAccountInfo(address);
 
     const parsedData = account?.data.parsed;
+
     const isToken = parsedData && isTokenProgramData(parsedData) && parsedData?.parsed.type === 'mint';
+    const isProgram = parsedData && isUpgradeableLoaderAccountData(parsedData) && parsedData?.parsed.type === 'program';
+    const isNativeProgram = Boolean(account?.executable);
 
+    const fallback = <AccountDetailsHeader title="Account" />;
+
+    // NFT and program headers read only account data and must still render while the token-info fetch loads.
+    // TODO: adopt @explorer/entity-inspector's accounts module (src/accounts: classifyAccountKindBase + kinds.ts; needs a browser-safe ./accounts subpath) instead of this inline kind chain
     if (isMetaplexNFT(parsedData, mintInfo) && parsedData.nftData) {
-        return <MetaplexNFTHeader nftData={parsedData.nftData} address={address} />;
+        return <MetaplexNFTHeader nftData={parsedData.nftData} />;
     }
 
-    const nftokenNFT = account && isNFTokenAccount(account);
-    if (nftokenNFT && account) {
-        return <NFTokenAccountHeader account={account} />;
+    const nftoken = account && parseNftokenAccount(account);
+    if (nftoken) {
+        return <NftokenAccountHeader nftoken={nftoken} />;
     }
 
-    if (isToken && !isTokenInfoLoading) {
+    if (isProgram) {
+        return <ProgramHeader address={address} parsedData={parsedData} />;
+    }
+
+    if (isNativeProgram) {
+        return <ProgramHeader address={address} />;
+    }
+
+    // Stake accounts have a stable parsed type that doesn't depend on the token-info (UTL) fetch,
+    // so resolve their header before the isTokenInfoLoading gate and render the correct title
+    // ("Stake Account") instead of the generic "Account" fallback.
+    if (parsedData?.program === STAKE_PROGRAM_LABEL) {
+        return <AccountDetailsHeader title="Stake Account" />;
+    }
+
+    // The token-mint header consumes the token-info fetch, so wait for it.
+    if (isTokenInfoLoading) return fallback;
+
+    if (isToken) {
         if (isRedactedTokenAddress(address)) {
             return (
                 <TokenMintHeader address={address} mintInfo={mintInfo} parsedData={undefined} tokenInfo={undefined} />
@@ -51,22 +83,25 @@ export function AccountHeader({
         return <TokenMintHeader address={address} mintInfo={mintInfo} parsedData={parsedData} tokenInfo={tokenInfo} />;
     }
 
-    const fallback = (
-        <div className="e-flex e-flex-col">
-            <h6 className="header-pretitle">Details</h6>
-            <h2 className="header-title">Account</h2>
-        </div>
-    );
     if (account) {
         return (
             <ErrorBoundary fallback={fallback}>
                 <Suspense fallback={fallback}>
-                    <CompressedNftAccountHeader account={account} />
+                    <CompressedNftAccountHeader account={account} fallback={fallback} />
                 </Suspense>
             </ErrorBoundary>
         );
     }
     return fallback;
+}
+
+function AccountDetailsHeader({ title }: { title: string }) {
+    return (
+        <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-normal uppercase text-muted">Details</span>
+            <h2 className="m-0 text-2xl font-normal leading-none text-white md:text-3xl">{title}</h2>
+        </div>
+    );
 }
 
 function TokenMintHeader({
@@ -81,22 +116,18 @@ function TokenMintHeader({
     parsedData?: TokenProgramData;
 }): JSX.Element {
     const metadataExtension = mintInfo?.extensions?.find(
-        ({ extension }: { extension: string }) => extension === 'tokenMetadata'
+        ({ extension }: { extension: string }) => extension === 'tokenMetadata',
     );
     const metadataPointerExtension = mintInfo?.extensions?.find(
-        ({ extension }: { extension: string }) => extension === 'metadataPointer'
+        ({ extension }: { extension: string }) => extension === 'metadataPointer',
     );
+    const dasImage = useDasImage(dasImageAddress(address, tokenInfo, parsedData));
 
-    const defaultCard = useMemo(
-        () => (
-            <TokenMintHeaderCard
-                token={tokenInfo ? tokenInfo : { logoURI: undefined, name: undefined }}
-                address={address}
-                unverified={tokenInfo ? !tokenInfo.verified : false}
-            />
-        ),
-        [address, tokenInfo]
-    );
+    const defaultCard = useMemo(() => {
+        const logoURI = tokenInfo?.logoURI ?? dasImage;
+        const token = tokenInfo ? { ...tokenInfo, logoURI } : { logoURI, name: undefined };
+        return <TokenMintHeaderCard token={token} />;
+    }, [dasImage, tokenInfo]);
 
     if (metadataPointerExtension && metadataExtension) {
         return (
@@ -105,6 +136,7 @@ function TokenMintHeader({
                     <Suspense fallback={defaultCard}>
                         <Token22MintHeader
                             address={address}
+                            fallbackLogoURI={dasImage}
                             metadataExtension={metadataExtension as any}
                             metadataPointerExtension={metadataPointerExtension as any}
                         />
@@ -114,112 +146,71 @@ function TokenMintHeader({
         );
     }
     // Fall back to legacy token list when there is stub metadata (blank uri), updatable by default by the mint authority
-    else if (!parsedData?.nftData?.metadata.data.uri && tokenInfo) {
+    else if (!parsedData?.nftData?.metadata.uri && tokenInfo) {
         return defaultCard;
     } else if (parsedData?.nftData) {
         const token = {
-            logoURI: parsedData?.nftData?.json?.image,
-            name: parsedData?.nftData?.json?.name ?? parsedData?.nftData.metadata.data.name,
-            symbol: parsedData?.nftData?.metadata.data.symbol,
+            logoURI: parsedData?.nftData?.json?.image ?? dasImage,
+            name: parsedData?.nftData?.json?.name ?? parsedData?.nftData.metadata.name,
+            symbol: parsedData?.nftData?.metadata.symbol,
         };
-        return <TokenMintHeaderCard token={token} address={address} unverified={!tokenInfo?.verified} />;
-    } else if (tokenInfo) {
-        return defaultCard;
+        return <TokenMintHeaderCard token={token} />;
     }
     return defaultCard;
 }
 
 function Token22MintHeader({
     address,
+    fallbackLogoURI,
     metadataExtension,
     metadataPointerExtension,
 }: {
     address: string;
+    fallbackLogoURI?: string;
     metadataExtension: { extension: 'tokenMetadata'; state?: any };
     metadataPointerExtension: { extension: 'metadataPointer'; state?: any };
 }) {
     const tokenMetadata = create(metadataExtension.state, TokenMetadata);
     const { metadataAddress } = create(metadataPointerExtension.state, MetadataPointer);
-    const metadata = useMetadataJsonLink(getProxiedUri(tokenMetadata.uri), { suspense: true });
+    const metadata = useMetadataJsonLink(getProxiedUri(tokenMetadata.uri));
 
     const headerTokenMetadata = {
-        logoURI: '',
+        logoURI: metadata?.image ?? fallbackLogoURI ?? '',
         name: tokenMetadata.name,
         symbol: tokenMetadata.symbol,
     };
-    if (metadata) {
-        headerTokenMetadata.logoURI = metadata.image;
-    }
 
     // Handles the basic case where MetadataPointer is referencing the Token Metadata extension directly
     // Does not handle the case where MetadataPointer is pointing at a separate account.
     if (metadataAddress?.toString() === address) {
-        return <TokenMintHeaderCard address={address} token={headerTokenMetadata} unverified={false} />;
+        return <TokenMintHeaderCard token={headerTokenMetadata} />;
     }
     throw new Error('Metadata loading for non-token 2022 programs is not yet supported');
 }
 
-function TokenMintHeaderCard({
-    address,
+export function TokenMintHeaderCard({
     token,
-    unverified,
 }: {
-    address: string;
     token: { name?: string | undefined; logoURI?: string | undefined; symbol?: string | undefined };
-    unverified: boolean;
 }) {
     return (
-        <div className="row align-items-center">
-            {unverified && (
-                <div className="alert alert-warning alert-scam" role="alert">
-                    Warning! Token names and logos are not unique. This token may have spoofed its name and logo to look
-                    like another token. Verify the token&apos;s mint address to ensure it is correct. If you are the
-                    token creator, please verify your token on{' '}
-                    <a
-                        href="https://support.coingecko.com/hc/en-us/articles/23725417857817-Verification-Guide-for-Listing-Update-Requests-on-CoinGecko"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: 'white', textDecoration: 'underline' }}
-                    >
-                        Coingecko
-                    </a>{' '}
-                    or on{' '}
-                    <a
-                        href="https://verify.jup.ag/"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: 'white', textDecoration: 'underline' }}
-                    >
-                        Jupiter
-                    </a>
-                    .
-                </div>
-            )}
-            <div className="col-auto">
-                <div className="avatar avatar-lg header-avatar-top">
-                    {token?.logoURI ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                            alt="token logo"
-                            className="avatar-img rounded-circle border border-4 border-body"
-                            height={16}
-                            src={token.logoURI}
-                            width={16}
-                        />
-                    ) : (
-                        <Identicon
-                            address={address}
-                            className="avatar-img rounded-circle border border-body identicon-wrapper"
-                            style={{ width: IDENTICON_WIDTH }}
-                        />
-                    )}
+        <div className="-mx-3 flex flex-wrap items-center">
+            <div className="flex-none px-3">
+                <div className="relative inline-block h-16 w-16">
+                    <ProxiedImage
+                        alt="Token logo"
+                        className="h-full w-full rounded-full border-4 border-solid border-dk-black-dark object-cover"
+                        height={64}
+                        uri={token.logoURI}
+                        width={64}
+                    />
                 </div>
             </div>
 
-            <div className="col ms-n3 ms-md-n2">
-                <h6 className="header-pretitle">Token</h6>
-                <h2 className="header-title">{token?.name || 'Unknown Token'}</h2>
-                <div className="header-pretitle no-overflow-with-ellipsis">
+            <div className="-ml-3 min-w-0 flex-1 px-3 md:-ml-1.5">
+                <h6 className="uppercase tracking-[0.08em] text-dk-gray-700">Token</h6>
+                <h2 className="mb-0">{token?.name || 'Unknown Token'}</h2>
+                <div className="overflow-hidden text-ellipsis whitespace-nowrap uppercase tracking-[0.08em] text-dk-gray-700">
                     {token?.symbol ? token.symbol : 'No Symbol was found'}
                 </div>
             </div>

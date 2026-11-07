@@ -1,0 +1,42 @@
+packages:
+  - packages/*
+  - packages/idl-decode/test-anchor-programs/*
+  - packages/idl-decode/test-codama-programs/*
+
+autoInstallPeers: true
+
+frozenLockfile: true
+
+catalogs:
+  oxc:
+    oxfmt: ^0.56.0
+    oxlint: ^1.71.0
+  storybook:
+    '@storybook/addon-a11y': 10.6.3
+    '@storybook/addon-docs': 10.6.3
+    '@storybook/addon-vitest': 10.6.3
+    '@storybook/nextjs-vite': 10.6.3
+    '@storybook/react': 10.6.3
+    eslint-plugin-storybook: 10.6.3
+    storybook: 10.6.3
+  tooling:
+    '@eslint/js': 9.39.4
+    eslint: 9.39.4
+    markdownlint-cli2: 0.23.2
+    prettier: 3.9.6
+    typescript: 5.7.3
+  vitest:
+    '@vitest/browser': 4.1.10
+    '@vitest/browser-playwright': 4.1.10
+    '@vitest/coverage-v8': 4.1.10
+    jsdom: 26.0.0
+    vitest: 4.1.10
+
+ignoreScripts: true
+
+minimumReleaseAge: 20160
+
+# Pin resolution to the public npm registry so it can't silently inherit a
+# global/org .npmrc mirror. Scoped keys (e.g. '@my-org') can be added here.
+registries:
+  default: https://registry.npmjs.org/

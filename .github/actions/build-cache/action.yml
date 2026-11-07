@@ -1,0 +1,31 @@
+name: Build cache
+description: Restore the shared incremental build cache (Playwright browsers and .next/cache), keyed by source hash so a near miss still helps.
+
+# Expects PLAYWRIGHT_BROWSERS_PATH in the caller's env (set at the workflow level in ci.yaml).
+runs:
+  using: composite
+  steps:
+    # The cache post step evaluates its inputs again after `pnpm install`, when `**/*.ts` also matches node_modules.
+    - name: Compute cache key
+      id: key
+      shell: bash
+      run: |
+        prefix="build-cache-${{ runner.os }}-${{ runner.arch }}-"
+        lockfile_prefix="${prefix}${{ hashFiles('**/pnpm-lock.yaml') }}-"
+        {
+          echo "prefix=${prefix}"
+          echo "lockfile-prefix=${lockfile_prefix}"
+          echo "key=${lockfile_prefix}${{ hashFiles('**/.browserslistrc') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}"
+        } >> "$GITHUB_OUTPUT"
+
+    # The pnpm store is not here: setup-node caches it, and holding both stored the same tree twice.
+    - name: Setup Additional Cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          ${{ github.workspace }}/.next/cache
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: |
+          ${{ steps.key.outputs.lockfile-prefix }}
+          ${{ steps.key.outputs.prefix }}

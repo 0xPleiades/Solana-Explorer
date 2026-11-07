@@ -1,0 +1,95 @@
+import type { EditionInfo } from '@entities/nft';
+import { some } from '@metaplex-foundation/umi';
+import { render, screen } from '@testing-library/react';
+import React from 'react';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+    getCreatorDropdownItems,
+    getIsMutablePill,
+    MetaplexNFTHeader,
+} from '@/app/components/account/MetaplexNFTHeader';
+import { makeNftData } from '@/app/entities/nft/lib/__tests__/make-nft-data';
+
+vi.mock('@providers/cluster', () => ({
+    useCluster: vi.fn(() => ({ cluster: 'mainnet-beta', url: 'https://api.mainnet-beta.solana.com' })),
+}));
+
+vi.mock('@utils/url', () => ({
+    useClusterPath: vi.fn(({ pathname }: { pathname: string }) => pathname),
+}));
+
+vi.mock('@providers/accounts', () => ({
+    useFetchAccountInfo: vi.fn(() => vi.fn()),
+    useMintAccountInfo: vi.fn(() => undefined),
+}));
+
+describe('MetaplexNFTHeader', () => {
+    it.each([
+        { overrides: { name: 'Cool NFT #42' }, text: 'Cool NFT #42' },
+        { overrides: { name: '' }, text: 'No NFT name was found' },
+        { overrides: { symbol: 'MYSYM' }, text: 'MYSYM' },
+        { overrides: { symbol: '' }, text: 'No Symbol was found' },
+    ])('should render $text for $overrides', ({ overrides, text }) => {
+        render(<MetaplexNFTHeader nftData={makeNftData(overrides)} />);
+        expect(screen.getByText(text)).toBeDefined();
+    });
+
+    it('should show Master Edition pill', () => {
+        const editionInfo: EditionInfo = {
+            edition: undefined,
+            masterEdition: { key: 6, maxSupply: some(100n), supply: 0n } as any,
+        };
+        const nftData = makeNftData({ editionInfo });
+        render(<MetaplexNFTHeader nftData={nftData} />);
+        expect(screen.getByText('Master Edition')).toBeDefined();
+    });
+
+    it('should show Edition X / Y pill', () => {
+        const editionInfo: EditionInfo = {
+            edition: { edition: 3n, key: 1, parent: '22222222222222222222222222222222' } as any,
+            masterEdition: { key: 6, maxSupply: some(100n), supply: 10n } as any,
+        };
+        const nftData = makeNftData({ editionInfo });
+        render(<MetaplexNFTHeader nftData={nftData} />);
+        expect(screen.getByText('Edition 3 / 10')).toBeDefined();
+    });
+
+    it('should show Primary Market and Mutable pills for an unsold mutable NFT', () => {
+        const nftData = makeNftData();
+        render(<MetaplexNFTHeader nftData={nftData} />);
+        expect(screen.getByText('Primary Market')).toBeDefined();
+        expect(screen.getByText('Mutable')).toBeDefined();
+    });
+});
+
+describe('getCreatorDropdownItems', () => {
+    it('should render creator addresses and shares', () => {
+        const creators = [
+            { address: 'Creator111111111111111111111111111111111111', share: 80, verified: true },
+            { address: 'Creator222222222222222222222222222222222222', share: 20, verified: false },
+        ];
+        const { container } = render(<div>{getCreatorDropdownItems(creators)}</div>);
+        expect(container.textContent).toContain('Creator111111111111111111111111111111111111');
+        expect(container.textContent).toContain('80%');
+        expect(container.textContent).toContain('Creator222222222222222222222222222222222222');
+        expect(container.textContent).toContain('20%');
+    });
+
+    it('should show no creators message when list is empty', () => {
+        const { container } = render(<div>{getCreatorDropdownItems(null)}</div>);
+        expect(container.textContent).toContain('No creators are associated with this NFT.');
+    });
+});
+
+describe('getIsMutablePill', () => {
+    it('should render Mutable', () => {
+        const { container } = render(getIsMutablePill(true));
+        expect(container.textContent).toContain('Mutable');
+    });
+
+    it('should render Immutable', () => {
+        const { container } = render(getIsMutablePill(false));
+        expect(container.textContent).toContain('Immutable');
+    });
+});

@@ -1,18 +1,23 @@
-import path from 'path';
+import { withSentryConfig } from '@sentry/nextjs';
+import { withBotId } from 'botid/next/config';
 import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { buildHeaders } from './config/headers.mjs';
+import { buildRedirects } from './config/redirects.mjs';
+import { createSentryBuildConfig } from './sentry/lib/config.mjs';
 
-const ADDRESS_ALIASES = ['account', 'accounts', 'addresses'];
-const TX_ALIASES = ['txs', 'txn', 'txns', 'transaction', 'transactions'];
-const SUPPLY_ALIASES = ['accounts', 'accounts/top'];
+// Pin both file-tracing and Turbopack to the project root; otherwise Next walks up to a parent
+// pnpm-workspace.yaml (e.g. in git worktrees) and the two roots disagree.
+const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    experimental: {
-        // FIXME: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
-        missingSuspenseWithCSRBailout: false,
+    // Use separate build directory for dev server to avoid conflicts with production builds
+    distDir: process.env.NODE_ENV === 'production' ? '.next' : '.next-dev',
+    outputFileTracingRoot: projectRoot,
+    // The tx OG route reads these off disk at runtime to hand satori.
+    outputFileTracingIncludes: {
+        '/og/tx/[signature]': ['./public/fonts/**', './public/img/og/**'],
     },
     images: {
         remotePatterns: [
@@ -24,46 +29,22 @@ const nextConfig = {
             },
         ],
     },
-    async redirects() {
-        return [
-            // Leave this above `ADDRESS_ALIASES`, since it also provides an alias for `/accounts`.
-            ...SUPPLY_ALIASES.map(oldRoot => ({
-                destination: '/supply',
-                permanent: true,
-                source: '/' + oldRoot,
-            })),
-            ...ADDRESS_ALIASES.flatMap(oldRoot =>
-                [':address', ':address/:tab'].map(path => ({
-                    destination: '/' + ['address', path].join('/'),
-                    permanent: true,
-                    source: '/' + [oldRoot, path].join('/'),
-                }))
-            ),
-            ...TX_ALIASES.map(oldRoot => ({
-                destination: '/' + ['tx', ':signature'].join('/'),
-                permanent: true,
-                source: '/' + [oldRoot, ':signature'].join('/'),
-            })),
-            {
-                destination: '/address/:address',
-                permanent: true,
-                source: '/address/:address/history',
-            },
-        ];
+    // bigint-buffer loads its native .node via `bindings`, which walks up from the module's real
+    // path — bundling it breaks that lookup and forces the pure-JS fallback warning.
+    serverExternalPackages: ['bigint-buffer'],
+    async headers() {
+        return buildHeaders();
     },
-    webpack: (config, { isServer }) => {
-        config.resolve.alias = {
-            ...(config.resolve.alias || {}),
-            borsh: path.resolve(__dirname, 'node_modules/borsh'), // force legacy version
-        };
-
-        if (!isServer) {
-            // Fixes npm packages that depend on `fs` module like `@project-serum/anchor`.
-            config.resolve.fallback.fs = false;
-        }
-
-        return config;
+    async redirects() {
+        return buildRedirects();
+    },
+    turbopack: {
+        root: projectRoot,
+        resolveAlias: {
+            // @coral-xyz/anchor's nodewallet/workspace require('fs'), but those paths never run in the browser.
+            fs: { browser: './empty.ts' },
+        },
     },
 };
 
-export default nextConfig;
+export default withBotId(withSentryConfig(nextConfig, createSentryBuildConfig()));

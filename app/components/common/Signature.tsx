@@ -1,38 +1,26 @@
+'use client';
+
+import { TruncatedValue, type TruncatedValueProps } from '@components/shared/TruncatedValue';
 import { TransactionSignature } from '@solana/web3.js';
 import { useClusterPath } from '@utils/url';
-import Link from 'next/link';
-import React from 'react';
 
-import { Copyable } from './Copyable';
+const SIGNATURE_MID_TRUNCATE_CHARS = 5;
 
 type Props = {
     signature: TransactionSignature;
-    alignRight?: boolean;
     link?: boolean;
-    truncate?: boolean;
-    truncateChars?: number;
-};
+    noTruncate?: boolean;
+} & Pick<TruncatedValueProps, 'alignItems' | 'alignRight' | 'className'>;
 
-export function Signature({ signature, alignRight, link, truncate, truncateChars }: Props) {
-    let signatureLabel = signature;
-
-    if (truncateChars) {
-        signatureLabel = signature.slice(0, truncateChars) + '…';
-    }
+export function Signature({ signature, link, noTruncate, ...rest }: Props) {
     const transactionPath = useClusterPath({ pathname: `/tx/${signature}` });
+
     return (
-        <div className={`d-flex align-items-center ${alignRight ? 'justify-content-end' : ''}`}>
-            <Copyable text={signature} replaceText={!alignRight}>
-                <span className="font-monospace">
-                    {link ? (
-                        <Link className={truncate ? 'text-truncate signature-truncate' : ''} href={transactionPath}>
-                            {signatureLabel}
-                        </Link>
-                    ) : (
-                        signatureLabel
-                    )}
-                </span>
-            </Copyable>
-        </div>
+        <TruncatedValue
+            value={signature}
+            href={link ? transactionPath : undefined}
+            truncation={{ enabled: !noTruncate, midTruncateChars: SIGNATURE_MID_TRUNCATE_CHARS }}
+            {...rest}
+        />
     );
 }

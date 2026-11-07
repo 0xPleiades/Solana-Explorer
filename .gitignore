@@ -10,6 +10,7 @@
 
 # next.js
 /.next/
+/.next-dev/
 /out/
 
 # production
@@ -25,7 +26,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
-.env*.local
+.env*
+!.env.example
+
+# MCP config (may contain API keys)
+.mcp.json
 
 # vercel
 .vercel
@@ -34,9 +39,23 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# workspace package build artifacts
+packages/*/dist
+
 # Speedy Web Compiler
 .swc/
 
-# vim
-.editorconfig
+# Storybook
 *storybook.log
+/storybook-static/
+/storybook-static-*/
+
+# Sentry Config File
+.env.sentry-build-plugin
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+certificates

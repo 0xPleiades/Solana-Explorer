@@ -1,24 +1,37 @@
 'use client';
 import './styles.css';
-import '@/app/types/bigint'; // polyfill toJSON for BigInt
 
 import { AddressLookupTableAccountSection } from '@components/account/address-lookup-table/AddressLookupTableAccountSection';
 import { isAddressLookupTableAccount } from '@components/account/address-lookup-table/types';
 import { ConfigAccountSection } from '@components/account/ConfigAccountSection';
 import { FeatureAccountSection } from '@components/account/FeatureAccountSection';
-import { isNFTokenAccount, parseNFTokenCollectionAccount } from '@components/account/nftoken/isNFTokenAccount';
-import { NFTOKEN_ADDRESS } from '@components/account/nftoken/nftoken';
-import { NFTokenAccountSection } from '@components/account/nftoken/NFTokenAccountSection';
 import { NonceAccountSection } from '@components/account/NonceAccountSection';
-import { StakeAccountSection } from '@components/account/StakeAccountSection';
+import { detectSquadsAccountType, SquadsAccountSection } from '@components/account/squads/SquadsAccountSection';
 import { SysvarAccountSection } from '@components/account/SysvarAccountSection';
 import { TokenAccountSection } from '@components/account/TokenAccountSection';
 import { UnknownAccountCard } from '@components/account/UnknownAccountCard';
 import { UpgradeableLoaderAccountSection } from '@components/account/UpgradeableLoaderAccountSection';
-import { VoteAccountSection } from '@components/account/VoteAccountSection';
 import { ErrorCard } from '@components/common/ErrorCard';
 import { LoadingCard } from '@components/common/LoadingCard';
 import { Header } from '@components/Header';
+import { useRefreshAccount } from '@entities/account';
+// Deliberately import from `lib/program-address`, NOT from `index`, which pulls the client and pako.
+import { isPmpAccount } from '@entities/pmp-account/lib/program-address';
+import { NFTOKEN_ADDRESS } from '@explorer/decoder-nftoken/program-ids';
+import {
+    ADDRESS_LOOKUP_TABLE_PROGRAM_LABEL,
+    BPF_UPGRADEABLE_LOADER_PROGRAM_LABEL,
+    CONFIG_PROGRAM_LABEL,
+    isParsedAccountProgram,
+    NONCE_PROGRAM_LABEL,
+    STAKE_PROGRAM_LABEL,
+    SYSVAR_PROGRAM_LABEL,
+    VOTE_PROGRAM_LABEL,
+} from '@explorer/parsers';
+import { isNftokenCollection, NftokenAccountSection } from '@features/nftoken';
+import { SecurityNotification } from '@features/security-txt';
+import { StakeAccountSection } from '@features/stake';
+import { VoteAccountSection } from '@features/vote';
 import {
     Account,
     AccountsProvider,
@@ -29,345 +42,86 @@ import {
     useFetchAccountInfo,
 } from '@providers/accounts';
 import FLAGGED_ACCOUNTS_WARNING from '@providers/accounts/flagged-accounts';
-import { useAnchorProgram } from '@providers/anchor';
-import { CacheEntry, FetchStatus } from '@providers/cache';
+import { CacheEntry, FetchStatus, isFetchingWithoutData } from '@providers/cache';
 import { useCluster } from '@providers/cluster';
+import { SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS as SAS_PROGRAM_ID } from '@solana/attestation';
 import { Address } from '@solana/kit';
 import { PROGRAM_ID as ACCOUNT_COMPRESSION_ID } from '@solana/spl-account-compression';
 import { PublicKey } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '@solana-program/token-2022';
-import { Cluster, ClusterStatus } from '@utils/cluster';
+import { ClusterStatus } from '@utils/cluster';
 import { FEATURE_PROGRAM_ID } from '@utils/parseFeatureAccount';
-import { useClusterPath } from '@utils/url';
-import Link from 'next/link';
-import { redirect, useSelectedLayoutSegment } from 'next/navigation';
-import React, { PropsWithChildren, Suspense } from 'react';
+import { redirect, RedirectType } from 'next/navigation';
+import React, { PropsWithChildren, Suspense, use } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
-import { SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS as SAS_PROGRAM_ID } from 'sas-lib';
 import useSWRImmutable from 'swr/immutable';
 
 import { CompressedNftCard } from '@/app/components/account/CompressedNftCard';
 import { SolanaAttestationServiceCard } from '@/app/components/account/sas/SolanaAttestationCard';
+import { getFeatureInfo, useFeatureInfo } from '@/app/entities/feature-gate';
+import { hasTokenMetadata } from '@/app/features/metadata';
+import {
+    isSubscriptionsAccount,
+    SubscriptionsAccountCard,
+    SubscriptionsEventAuthorityCard,
+    useIsEventAuthority,
+    useWalletDelegations,
+    useWalletPlans,
+} from '@/app/features/subscriptions';
 import { useCompressedNft } from '@/app/providers/compressed-nft';
 import { useSquadsMultisigLookup } from '@/app/providers/squadsMultisig';
-import { useProgramMetadataIdl } from '@/app/providers/useProgramMetadataIdl';
+import { type NavigationTab, NavigationTabLink, NavigationTabs } from '@/app/shared/ui/navigation-tabs';
+import { PageLayout, PageSections } from '@/app/shared/ui/page-layout';
 import { isAttestationAccount } from '@/app/utils/attestation-service';
-import { getFeatureInfo, useFeatureInfo } from '@/app/utils/feature-gate/utils';
-import { FullTokenInfo, getFullTokenInfo, isRedactedTokenAddress } from '@/app/utils/token-info';
+import {
+    fetchFullTokenInfo,
+    FullTokenInfo,
+    FullTokenInfoSwrKey,
+    getFullTokenInfoSwrKey,
+    isRedactedTokenAddress,
+} from '@/app/utils/token-info';
+import { useBuildClusterPath, useClusterPath } from '@/app/utils/url';
 
-const TABS_LOOKUP: { [id: string]: Tab[] } = {
-    'address-lookup-table': [
-        {
-            path: 'entries',
-            slug: 'entries',
-            title: 'Table Entries',
-        },
-    ],
-    attestation: [
-        {
-            path: 'attestation',
-            slug: 'attestation',
-            title: 'Attestation Service',
-        },
-    ],
+import { AccountDataTab } from './AccountDataTab';
+
+const TABS_LOOKUP: Record<string, AddressTab[]> = {
+    'address-lookup-table': [{ path: 'entries', title: 'Table Entries' }],
+    attestation: [{ path: 'attestation', title: 'Attestation Service' }],
     'bpf-upgradeable-loader': [
-        {
-            path: 'security',
-            slug: 'security',
-            title: 'Security',
-        },
-        {
-            path: 'verified-build',
-            slug: 'verified-build',
-            title: 'Verified Build',
-        },
+        { path: 'security', title: 'Security' },
+        { path: 'verified-build', title: 'Verified Build' },
     ],
-    'nftoken:collection': [
-        {
-            path: 'nfts',
-            slug: 'nftoken-collection-nfts',
-            title: 'NFTs',
-        },
-    ],
-    'spl-account-compression': [
-        {
-            path: 'concurrent-merkle-tree',
-            slug: 'concurrent-merkle-tree',
-            title: 'Concurrent Merkle Tree',
-        },
-    ],
+    'spl-account-compression': [{ path: 'concurrent-merkle-tree', title: 'Concurrent Merkle Tree' }],
     'spl-token-2022:mint': [
-        {
-            path: 'transfers',
-            slug: 'transfers',
-            title: 'Transfers',
-        },
-        {
-            path: 'instructions',
-            slug: 'instructions',
-            title: 'Instructions',
-        },
+        { path: 'transfers', title: 'Transfers' },
+        { path: 'instructions', title: 'Instructions' },
     ],
     'spl-token-2022:mint:metaplexNFT': [
-        {
-            path: 'metadata',
-            slug: 'metadata',
-            title: 'Metadata',
-        },
-        {
-            path: 'attributes',
-            slug: 'attributes',
-            title: 'Attributes',
-        },
+        { path: 'metadata', title: 'Metadata' },
+        { path: 'attributes', title: 'Attributes' },
     ],
     'spl-token:mint': [
-        {
-            path: 'transfers',
-            slug: 'transfers',
-            title: 'Transfers',
-        },
-        {
-            path: 'instructions',
-            slug: 'instructions',
-            title: 'Instructions',
-        },
+        { path: 'transfers', title: 'Transfers' },
+        { path: 'instructions', title: 'Instructions' },
     ],
     'spl-token:mint:metaplexNFT': [
-        {
-            path: 'metadata',
-            slug: 'metadata',
-            title: 'Metadata',
-        },
-        {
-            path: 'attributes',
-            slug: 'attributes',
-            title: 'Attributes',
-        },
+        { path: 'metadata', title: 'Metadata' },
+        { path: 'attributes', title: 'Attributes' },
     ],
-    stake: [
-        {
-            path: 'rewards',
-            slug: 'rewards',
-            title: 'Rewards',
-        },
-    ],
-    'sysvar:recentBlockhashes': [
-        {
-            path: 'blockhashes',
-            slug: 'blockhashes',
-            title: 'Blockhashes',
-        },
-    ],
-    'sysvar:slotHashes': [
-        {
-            path: 'slot-hashes',
-            slug: 'slot-hashes',
-            title: 'Slot Hashes',
-        },
-    ],
-    'sysvar:stakeHistory': [
-        {
-            path: 'stake-history',
-            slug: 'stake-history',
-            title: 'Stake History',
-        },
-    ],
+    stake: [{ path: 'rewards', title: 'Rewards' }],
+    'sysvar:recentBlockhashes': [{ path: 'blockhashes', title: 'Blockhashes' }],
+    'sysvar:slotHashes': [{ path: 'slot-hashes', title: 'Slot Hashes' }],
+    'sysvar:stakeHistory': [{ path: 'stake-history', title: 'Stake History' }],
     vote: [
-        {
-            path: 'vote-history',
-            slug: 'vote-history',
-            title: 'Vote History',
-        },
-        {
-            path: 'rewards',
-            slug: 'rewards',
-            title: 'Rewards',
-        },
+        { path: 'vote-history', title: 'Vote History' },
+        { path: 'rewards', title: 'Rewards' },
     ],
 };
 
-const TOKEN_TABS_HIDDEN = ['spl-token:mint', 'spl-token-2022:mint', 'config', 'vote', 'sysvar', 'config'];
+const TOKEN_TABS_HIDDEN = ['spl-token:mint', 'spl-token-2022:mint', 'config', 'vote', 'sysvar'];
 
-type Props = PropsWithChildren<{ params: { address: string } }>;
-
-async function fetchFullTokenInfo([_, pubkey, cluster, url]: ['get-full-token-info', string, Cluster, string]) {
-    return await getFullTokenInfo(new PublicKey(pubkey), cluster, url);
-}
-
-function AddressLayoutInner({ children, params: { address } }: Props) {
-    const fetchAccount = useFetchAccountInfo();
-    const { status, cluster, url } = useCluster();
-    const info = useAccountInfo(address);
-
-    let pubkey: PublicKey | undefined;
-
-    try {
-        pubkey = new PublicKey(address);
-    } catch (err) {
-        /* empty */
-    }
-
-    const infoStatus = info?.status;
-    const infoParsed = info?.data?.data.parsed;
-
-    const { data: fullTokenInfo, isLoading: isFullTokenInfoLoading } = useSWRImmutable(
-        infoStatus === FetchStatus.Fetched && infoParsed && isTokenProgramData(infoParsed) && pubkey
-            ? ['get-full-token-info', address, cluster, url]
-            : null,
-        fetchFullTokenInfo
-    );
-
-    // Fetch account on load
-    React.useEffect(() => {
-        if (!info && status === ClusterStatus.Connected && pubkey) {
-            fetchAccount(pubkey, 'parsed');
-        }
-    }, [address, status]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    return (
-        <div className="container mt-n3">
-            <Header
-                address={address}
-                account={info?.data}
-                tokenInfo={fullTokenInfo}
-                isTokenInfoLoading={isFullTokenInfoLoading}
-            />
-            {!pubkey ? (
-                <ErrorCard text={`Address "${address}" is not valid`} />
-            ) : (
-                <DetailsSections
-                    info={info}
-                    pubkey={pubkey}
-                    tokenInfo={fullTokenInfo}
-                    isTokenInfoLoading={isFullTokenInfoLoading}
-                >
-                    {children}
-                </DetailsSections>
-            )}
-        </div>
-    );
-}
-
-export default function AddressLayout({ children, params }: Props) {
-    return (
-        <AccountsProvider>
-            <AddressLayoutInner params={params}>{children}</AddressLayoutInner>
-        </AccountsProvider>
-    );
-}
-
-function DetailsSections({
-    children,
-    pubkey,
-    tab,
-    info,
-    tokenInfo,
-    isTokenInfoLoading,
-}: {
-    children: React.ReactNode;
-    pubkey: PublicKey;
-    tab?: string;
-    info?: CacheEntry<Account>;
-    tokenInfo?: FullTokenInfo;
-    isTokenInfoLoading: boolean;
-}) {
-    const fetchAccount = useFetchAccountInfo();
-    const address = pubkey.toBase58();
-
-    if (!info || info.status === FetchStatus.Fetching || isTokenInfoLoading) {
-        return <LoadingCard />;
-    } else if (info.status === FetchStatus.FetchFailed || info.data?.lamports === undefined) {
-        return <ErrorCard retry={() => fetchAccount(pubkey, 'parsed')} text="Fetch Failed" />;
-    }
-
-    const account = info.data;
-    const tabComponents = getTabs(pubkey, account).concat(getCustomLinkedTabs(pubkey, account));
-
-    if (tab && tabComponents.filter(tabComponent => tabComponent.tab.slug === tab).length === 0) {
-        redirect(`/address/${address}`);
-    }
-
-    return (
-        <>
-            {FLAGGED_ACCOUNTS_WARNING[address] ?? null}
-            <InfoSection account={account} tokenInfo={tokenInfo} />
-            <MoreSection tabs={tabComponents.map(({ component }) => component)}>{children}</MoreSection>
-        </>
-    );
-}
-
-function InfoSection({ account, tokenInfo }: { account: Account; tokenInfo?: FullTokenInfo }) {
-    const parsedData = account.data.parsed;
-    const rawData = account.data.raw;
-
-    // get feature data from featureGates.json
-    const featureInfo = useFeatureInfo({ address: account.pubkey.toBase58() });
-
-    if (parsedData && parsedData.program === 'bpf-upgradeable-loader') {
-        return (
-            <UpgradeableLoaderAccountSection
-                account={account}
-                parsedData={parsedData.parsed}
-                programData={parsedData.programData}
-            />
-        );
-    } else if (parsedData && parsedData.program === 'stake') {
-        return (
-            <StakeAccountSection
-                account={account}
-                stakeAccount={parsedData.parsed.info}
-                activation={parsedData.activation}
-                stakeAccountType={parsedData.parsed.type}
-            />
-        );
-    } else if (account.owner.toBase58() === NFTOKEN_ADDRESS) {
-        return <NFTokenAccountSection account={account} />;
-    } else if (parsedData && isTokenProgramData(parsedData)) {
-        return <TokenAccountSection account={account} tokenAccount={parsedData.parsed} tokenInfo={tokenInfo} />;
-    } else if (parsedData && parsedData.program === 'nonce') {
-        return <NonceAccountSection account={account} nonceAccount={parsedData.parsed} />;
-    } else if (parsedData && parsedData.program === 'vote') {
-        return <VoteAccountSection account={account} voteAccount={parsedData.parsed} />;
-    } else if (parsedData && parsedData.program === 'sysvar') {
-        return <SysvarAccountSection account={account} sysvarAccount={parsedData.parsed} />;
-    } else if (parsedData && parsedData.program === 'config') {
-        return <ConfigAccountSection account={account} configAccount={parsedData.parsed} />;
-    } else if (
-        parsedData &&
-        parsedData.program === 'address-lookup-table' &&
-        parsedData.parsed.type === 'lookupTable'
-    ) {
-        return <AddressLookupTableAccountSection account={account} lookupTableAccount={parsedData.parsed.info} />;
-    } else if (rawData && isAddressLookupTableAccount(account.owner.toBase58() as Address, rawData)) {
-        return <AddressLookupTableAccountSection account={account} data={rawData} />;
-    } else if (featureInfo || account.owner.toBase58() === FEATURE_PROGRAM_ID) {
-        return <FeatureAccountSection account={account} />;
-    } else if (account.owner.toBase58() === SAS_PROGRAM_ID) {
-        return <SolanaAttestationServiceCard account={account} />;
-    } else {
-        const fallback = <UnknownAccountCard account={account} />;
-        return (
-            <ErrorBoundary fallback={fallback}>
-                <Suspense fallback={fallback}>
-                    <CompressedNftCard account={account} />
-                </Suspense>
-            </ErrorBoundary>
-        );
-    }
-}
-
-type Tab = {
-    slug: MoreTabs;
-    title: string;
-    path: string;
-};
-
-type TabComponent = {
-    tab: Tab;
-    component: JSX.Element | null;
-};
-
-export type MoreTabs =
+export type AddressTabPath =
+    | ''
     | 'history'
     | 'tokens'
     | 'nftoken-collection-nfts'
@@ -391,33 +145,269 @@ export type MoreTabs =
     | 'program-multisig'
     | 'feature-gate'
     | 'token-extensions'
-    | 'attestation';
+    | 'attestation'
+    | 'account-data'
+    | 'subscriptions';
 
-function MoreSection({ children, tabs }: { children: React.ReactNode; tabs: (JSX.Element | null)[] }) {
+type AddressTab = NavigationTab<AddressTabPath>;
+
+type AddressParams = { address: string };
+type Props = PropsWithChildren<{ params: Promise<AddressParams> }>;
+type InnerProps = PropsWithChildren<{ params: AddressParams }>;
+
+function AddressLayoutInner({ children, params: { address } }: InnerProps) {
+    const fetchAccount = useFetchAccountInfo();
+    const { status, cluster, url, genesisHash } = useCluster();
+    const info = useAccountInfo(address);
+
+    let pubkey: PublicKey | undefined;
+
+    try {
+        pubkey = new PublicKey(address);
+    } catch (_err) {
+        /* empty */
+    }
+
+    const infoParsed = info?.data?.data.parsed;
+
+    const shouldFetchTokenInfo = infoParsed && isTokenProgramData(infoParsed) && pubkey;
+    const {
+        data: fullTokenInfo,
+        error: fullTokenInfoError,
+        isLoading: isFullTokenInfoLoading,
+    } = useSWRImmutable(
+        shouldFetchTokenInfo ? getFullTokenInfoSwrKey(address, cluster, url, genesisHash) : null,
+        fetchFullTokenInfoOrNull,
+        // The token-info request logs each failure, so a refresh or a remount retries it instead of SWR.
+        { shouldRetryOnError: false },
+    );
+    const tokenInfo = fullTokenInfo ?? undefined;
+
+    const isAccountLoading = !info || isFetchingWithoutData(info);
+    const isTokenInfoLoading = isAccountLoading || (isFullTokenInfoLoading && fullTokenInfoError === undefined);
+
+    // Fetch account on load. `info` is in the deps so the fetch re-arms if the cache entry is
+    // cleared from under us (e.g. a dev-mode segment remount wiping provider state mid-fetch).
+    React.useEffect(() => {
+        if (!info && status === ClusterStatus.Connected && pubkey) {
+            fetchAccount(pubkey, 'parsed');
+        }
+    }, [address, status, info]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    return (
+        <PageLayout>
+            <Header
+                address={address}
+                account={info?.data}
+                tokenInfo={tokenInfo}
+                isTokenInfoLoading={isTokenInfoLoading}
+            />
+            {!pubkey ? (
+                <ErrorCard text={`Address "${address}" is not valid`} />
+            ) : (
+                <DetailsSections
+                    info={info}
+                    pubkey={pubkey}
+                    tokenInfo={tokenInfo}
+                    isTokenInfoLoading={isTokenInfoLoading}
+                    notification={<SecurityNotification parsedData={infoParsed} address={address} />}
+                >
+                    {children}
+                </DetailsSections>
+            )}
+        </PageLayout>
+    );
+}
+
+// SWR sets `isLoading` while a request runs and `data` is `undefined`, so a missing token info caches `null` instead.
+async function fetchFullTokenInfoOrNull(key: FullTokenInfoSwrKey) {
+    return (await fetchFullTokenInfo(key)) ?? null;
+}
+
+export default function AddressLayout(props: Props) {
+    const params = use(props.params);
+
+    const { children } = props;
+
+    return (
+        <AccountsProvider fetchNftMetadata>
+            <AddressLayoutInner params={params}>{children}</AddressLayoutInner>
+        </AccountsProvider>
+    );
+}
+
+function DetailsSections({
+    children,
+    pubkey,
+    info,
+    tokenInfo,
+    isTokenInfoLoading,
+    notification,
+}: {
+    children: React.ReactNode;
+    notification: React.ReactNode;
+    pubkey: PublicKey;
+    info?: CacheEntry<Account>;
+    tokenInfo?: FullTokenInfo;
+    isTokenInfoLoading: boolean;
+}) {
+    const refreshAccount = useRefreshAccount();
+    const address = pubkey.toBase58();
+
+    if (!info || isTokenInfoLoading) {
+        return <LoadingCard />;
+    } else if (info.status === FetchStatus.FetchFailed || info.data?.lamports === undefined) {
+        return <ErrorCard retry={() => refreshAccount(pubkey, 'parsed')} text="Fetch Failed" />;
+    }
+
+    const account = info.data;
+    const navigationTabs = getNavigationTabs(pubkey, account);
+
+    const hasNoAccountData = (!account.data.raw || account.data.raw.length === 0) && !account.data.parsed;
+    const authority = (account.data.parsed as UpgradeableLoaderAccountData | undefined)?.programData?.authority;
+
+    const asyncTabChildren = (
+        <>
+            {hasNoAccountData && (
+                <Suspense fallback={null}>
+                    <CompressedNftTabs pubkey={pubkey} />
+                </Suspense>
+            )}
+            <Suspense fallback={null}>
+                <ProgramMultisigTab authority={authority} />
+            </Suspense>
+            <Suspense fallback={null}>
+                <WalletSubscriptionsTab walletAddress={account.executable ? null : address} />
+            </Suspense>
+            <Suspense fallback={null}>
+                <AccountDataTab programId={account.owner} />
+            </Suspense>
+        </>
+    );
+
+    return (
+        <PageSections>
+            {FLAGGED_ACCOUNTS_WARNING[address] ?? null}
+            <InfoSection account={account} tokenInfo={tokenInfo} />
+            {notification}
+            <MoreSection baseUrl={`/address/${address}`} tabs={navigationTabs} asyncChildren={asyncTabChildren}>
+                {children}
+            </MoreSection>
+        </PageSections>
+    );
+}
+
+function InfoSection({ account, tokenInfo }: { account: Account; tokenInfo?: FullTokenInfo }) {
+    const parsedData = account.data.parsed;
+    const rawData = account.data.raw;
+    const addressPath = useClusterPath({ pathname: `/address/${account.pubkey.toBase58()}` });
+
+    // get feature data from featureGates.json
+    const featureInfo = useFeatureInfo({ address: account.pubkey.toBase58() });
+
+    // The Subscriptions event authority is a signer-only PDA with no account data, so it
+    // is recognised by its derived address rather than by decoding bytes.
+    const isEventAuthority = useIsEventAuthority(account.pubkey.toBase58());
+
+    // Squads v4 Batch / VaultTransaction accounts aren't RPC-parsed; detect them by
+    // discriminator so we can surface a direct "Inspect" link to the transaction inspector.
+    const squadsAccountType = rawData ? detectSquadsAccountType(account.owner, rawData) : undefined;
+
+    // TODO: adopt @explorer/entity-inspector's accounts module (src/accounts: classifyAccountKindBase + kinds.ts; needs a browser-safe ./accounts subpath) instead of this inline kind chain
+    if (isParsedAccountProgram(parsedData, BPF_UPGRADEABLE_LOADER_PROGRAM_LABEL)) {
+        return (
+            <UpgradeableLoaderAccountSection
+                account={account}
+                parsedData={parsedData.parsed}
+                programData={parsedData.programData}
+            />
+        );
+    } else if (isParsedAccountProgram(parsedData, STAKE_PROGRAM_LABEL)) {
+        return (
+            <StakeAccountSection
+                account={account}
+                stakeAccount={parsedData.parsed.info}
+                activation={parsedData.activation}
+                stakeAccountType={parsedData.parsed.type}
+            />
+        );
+    } else if (account.owner.toBase58() === NFTOKEN_ADDRESS) {
+        return <NftokenAccountSection account={account} />;
+    } else if (parsedData && isTokenProgramData(parsedData)) {
+        return <TokenAccountSection account={account} tokenAccount={parsedData.parsed} tokenInfo={tokenInfo} />;
+    } else if (isParsedAccountProgram(parsedData, NONCE_PROGRAM_LABEL)) {
+        return <NonceAccountSection account={account} nonceAccount={parsedData.parsed} />;
+    } else if (isParsedAccountProgram(parsedData, VOTE_PROGRAM_LABEL)) {
+        return <VoteAccountSection account={account} voteAccount={parsedData.parsed} />;
+    } else if (isParsedAccountProgram(parsedData, SYSVAR_PROGRAM_LABEL)) {
+        return <SysvarAccountSection account={account} sysvarAccount={parsedData.parsed} />;
+    } else if (isParsedAccountProgram(parsedData, CONFIG_PROGRAM_LABEL)) {
+        return <ConfigAccountSection account={account} configAccount={parsedData.parsed} />;
+    } else if (
+        isParsedAccountProgram(parsedData, ADDRESS_LOOKUP_TABLE_PROGRAM_LABEL) &&
+        parsedData.parsed.type === 'lookupTable'
+    ) {
+        return <AddressLookupTableAccountSection account={account} lookupTableAccount={parsedData.parsed.info} />;
+    } else if (rawData && isAddressLookupTableAccount(account.owner.toBase58() as Address, rawData)) {
+        return <AddressLookupTableAccountSection account={account} data={rawData} />;
+    } else if (featureInfo || account.owner.toBase58() === FEATURE_PROGRAM_ID) {
+        return <FeatureAccountSection account={account} />;
+    } else if (account.owner.toBase58() === SAS_PROGRAM_ID) {
+        return <SolanaAttestationServiceCard account={account} />;
+    } else if (isEventAuthority) {
+        return <SubscriptionsEventAuthorityCard account={account} />;
+    } else if (isSubscriptionsAccount(account)) {
+        return (
+            <SubscriptionsAccountCard
+                account={account}
+                onNotFound={() => redirect(addressPath, RedirectType.replace)}
+            />
+        );
+    } else if (squadsAccountType) {
+        return <SquadsAccountSection account={account} accountType={squadsAccountType} />;
+    } else {
+        const fallback = <UnknownAccountCard account={account} />;
+        return (
+            <ErrorBoundary fallback={fallback}>
+                <Suspense fallback={fallback}>
+                    <CompressedNftCard account={account} />
+                </Suspense>
+            </ErrorBoundary>
+        );
+    }
+}
+
+function MoreSection({
+    children,
+    baseUrl,
+    tabs,
+    asyncChildren,
+}: {
+    children: React.ReactNode;
+    baseUrl: string;
+    tabs: AddressTab[];
+    asyncChildren?: React.ReactNode;
+}) {
+    const buildClusterPath = useBuildClusterPath();
+    const buildHref = React.useCallback(
+        (path: string) => buildClusterPath(`${baseUrl}/${path}`),
+        [baseUrl, buildClusterPath],
+    );
+
     return (
         <>
-            <div className="container">
-                <div className="header">
-                    <div className="header-body pt-0">
-                        <ul className="nav nav-tabs nav-overflow header-tabs">{tabs}</ul>
-                    </div>
-                </div>
-            </div>
+            <NavigationTabs buildHref={buildHref} sticky tabs={tabs}>
+                {asyncChildren}
+            </NavigationTabs>
             {children}
         </>
     );
 }
 
-function getTabs(pubkey: PublicKey, account: Account): TabComponent[] {
+function getNavigationTabs(pubkey: PublicKey, account: Account): AddressTab[] {
     const address = pubkey.toBase58();
     const parsedData = account.data.parsed;
-    const tabs: (Tab & { compressed?: boolean })[] = [
-        {
-            path: '',
-            slug: 'history',
-            title: 'History',
-        },
-    ];
+    const tabs: AddressTab[] = [{ path: '', title: 'History' }];
 
     let programTypeKey = '';
     if (parsedData) {
@@ -432,65 +422,44 @@ function getTabs(pubkey: PublicKey, account: Account): TabComponent[] {
         tabs.push(...TABS_LOOKUP[programTypeKey]);
     }
 
-    // Add the key for address lookup tables
+    // Address lookup tables
     if (account.data.raw && isAddressLookupTableAccount(account.owner.toBase58() as Address, account.data.raw)) {
         tabs.push(...TABS_LOOKUP['address-lookup-table']);
     }
 
-    // Add the key for Metaplex NFTs
+    // Metaplex NFTs
     if (
         parsedData &&
-        (programTypeKey === 'spl-token:mint' || programTypeKey == 'spl-token-2022:mint') &&
+        (programTypeKey === 'spl-token:mint' || programTypeKey === 'spl-token-2022:mint') &&
         (parsedData as TokenProgramData).nftData
     ) {
         tabs.push(...TABS_LOOKUP[`${programTypeKey}:metaplexNFT`]);
     }
 
-    // Compressed NFT tabs
+    // Compressed NFTs: show tabs immediately for accounts with no data.
+    // TODO: duplicates with async CompressedNftTabs on desktop tablist — refactor
+    // to a single source once NavigationTabLink supports static deduplication.
     if ((!account.data.raw || account.data.raw.length === 0) && !account.data.parsed) {
-        tabs.push(
-            {
-                compressed: true,
-                path: 'metadata',
-                slug: 'metadata',
-                title: 'Metadata',
-            },
-            {
-                compressed: true,
-                path: 'attributes',
-                slug: 'attributes',
-                title: 'Attributes',
-            },
-            { compressed: true, path: 'compression', slug: 'compression', title: 'Compression' }
-        );
+        tabs.push({ path: 'metadata', title: 'Metadata' });
+        tabs.push({ path: 'attributes', title: 'Attributes' });
+        tabs.push({ path: 'compression', title: 'Compression' });
     }
 
-    const isNFToken = account && isNFTokenAccount(account);
-    if (isNFToken) {
-        const collection = parseNFTokenCollectionAccount(account);
-        if (collection) {
-            tabs.push({
-                path: 'nftoken-collection-nfts',
-                slug: 'nftoken-collection-nfts',
-                title: 'NFTs',
-            });
-        }
+    if (hasTokenMetadata(parsedData)) {
+        tabs.push({ path: 'metadata', title: 'Metadata' });
+    }
+
+    const isNFToken = account.owner.toBase58() === NFTOKEN_ADDRESS;
+    if (isNftokenCollection(account)) {
+        tabs.push({ path: 'nftoken-collection-nfts', title: 'NFTs' });
     }
 
     if (
         !isNFToken &&
         (!parsedData || !(TOKEN_TABS_HIDDEN.includes(parsedData.program) || TOKEN_TABS_HIDDEN.includes(programTypeKey)))
     ) {
-        tabs.push({
-            path: 'tokens',
-            slug: 'tokens',
-            title: 'Tokens',
-        });
-        tabs.push({
-            path: 'domains',
-            slug: 'domains',
-            title: 'Domains',
-        });
+        tabs.push({ path: 'tokens', title: 'Tokens' });
+        tabs.push({ path: 'domains', title: 'Domains' });
     }
 
     if (account.owner.toBase58() === ACCOUNT_COMPRESSION_ID.toBase58()) {
@@ -501,238 +470,80 @@ function getTabs(pubkey: PublicKey, account: Account): TabComponent[] {
         tabs.push(...TABS_LOOKUP['attestation']);
     }
 
+    // account-data tab is to display decoded data of account.
+    // TODO: consider moving anchor-account tab to account-data and add support for Codama IDL accounts.
+    if (isPmpAccount(account)) {
+        tabs.push({ path: 'account-data', title: 'Account Data' });
+    }
+
     if (isRedactedTokenAddress(address)) {
-        const metadataIndex = tabs.findIndex(tab => tab.slug === 'metadata');
+        const metadataIndex = tabs.findIndex(tab => tab.path === 'metadata');
         if (metadataIndex !== -1) {
             tabs.splice(metadataIndex, 1);
         }
     }
 
-    return tabs.map(tab => {
-        return {
-            component: !tab.compressed ? (
-                <Tab address={address} key={tab.slug} path={tab.path} title={tab.title} />
-            ) : (
-                <React.Suspense key={tab.slug} fallback={<></>}>
-                    <CompressedNftLink tab={tab} address={pubkey.toString()} pubkey={pubkey} />
-                </React.Suspense>
-            ),
-            tab,
-        };
-    });
-}
+    // Sync-conditional: IDL (only for executable accounts)
+    if (account.executable) {
+        tabs.push({ path: 'idl', title: 'Program IDL' });
+    }
 
-function Tab({ address, path, title }: { address: string; path: string; title: string }) {
-    const tabPath = useClusterPath({ pathname: `/address/${address}/${path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = (selectedLayoutSegment === null && path === '') || selectedLayoutSegment === path;
-    return (
-        <li className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={tabPath} scroll={false}>
-                {title}
-            </Link>
-        </li>
-    );
-}
-
-function getCustomLinkedTabs(pubkey: PublicKey, account: Account) {
-    const tabComponents = [];
-    const programMultisigTab: Tab = {
-        path: 'program-multisig',
-        slug: 'program-multisig',
-        title: 'Program Multisig',
-    };
-    tabComponents.push({
-        component: (
-            <React.Suspense key={programMultisigTab.slug} fallback={<></>}>
-                <ProgramMultisigLink
-                    tab={programMultisigTab}
-                    address={pubkey.toString()}
-                    authority={
-                        (account.data.parsed as UpgradeableLoaderAccountData | undefined)?.programData?.authority
-                    }
-                />
-            </React.Suspense>
-        ),
-        tab: programMultisigTab,
-    });
-
-    // Add extensions tab for Token Extensions program accounts
+    // Sync-conditional: Token Extensions (only for Token-2022 accounts)
     if (account.owner.toBase58() === TOKEN_2022_PROGRAM_ADDRESS) {
-        const extensionsTab: Tab = {
-            path: 'token-extensions',
-            slug: 'token-extensions',
-            title: 'Extensions',
-        };
-        tabComponents.push({
-            component: <TokenExtensionsLink tab={extensionsTab} address={pubkey.toString()} />,
-            tab: extensionsTab,
-        });
+        tabs.push({ path: 'token-extensions', title: 'Extensions' });
     }
 
-    const idlProgramTab: Tab = {
-        path: 'idl',
-        slug: 'idl',
-        title: 'Program IDL',
-    };
-    tabComponents.push({
-        component: (
-            <React.Suspense key={idlProgramTab.slug} fallback={<></>}>
-                <ProgramIdlLink tab={idlProgramTab} address={pubkey.toString()} pubkey={pubkey} />
-            </React.Suspense>
-        ),
-        tab: idlProgramTab,
-    });
-
-    const accountDataTab: Tab = {
-        path: 'anchor-account',
-        slug: 'anchor-account',
-        title: 'Anchor Data',
-    };
-    tabComponents.push({
-        component: (
-            <React.Suspense key={accountDataTab.slug} fallback={<></>}>
-                <AccountDataLink tab={accountDataTab} address={pubkey.toString()} programId={account.owner} />
-            </React.Suspense>
-        ),
-        tab: accountDataTab,
-    });
-
-    // Feature-specific information
+    // Sync-conditional: Feature Gate
     if (getFeatureInfo(pubkey.toBase58())) {
-        const featureInfoTab: Tab = {
-            path: 'feature-gate',
-            slug: 'feature-gate',
-            title: 'Feature Gate',
-        };
-        tabComponents.push({
-            component: <FeatureGateLink key={featureInfoTab.slug} tab={featureInfoTab} address={pubkey.toString()} />,
-            tab: featureInfoTab,
-        });
+        tabs.push({ path: 'feature-gate', title: 'Feature Gate' });
     }
 
-    return tabComponents;
+    return tabs;
 }
 
-function ProgramIdlLink({ tab, address, pubkey }: { tab: Tab; address: string; pubkey: PublicKey }) {
-    const { url, cluster } = useCluster();
-    const { idl } = useAnchorProgram(pubkey.toString(), url, cluster);
-    const { programMetadataIdl } = useProgramMetadataIdl(pubkey.toString(), url, cluster);
-    const anchorProgramPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
+// --- Async tab triggers (rendered inside NavigationTabs on desktop via context) ---
 
-    if (!idl && !programMetadataIdl) {
-        return null;
-    }
-
-    return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={anchorProgramPath}>
-                {tab.title}
-            </Link>
-        </li>
-    );
-}
-
-function AccountDataLink({ address, tab, programId }: { address: string; tab: Tab; programId: PublicKey }) {
-    const { url, cluster } = useCluster();
-    const { program: accountAnchorProgram } = useAnchorProgram(programId.toString(), url, cluster);
-    const accountDataPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
-    if (!accountAnchorProgram) {
-        return null;
-    }
-
-    return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={accountDataPath}>
-                {tab.title}
-            </Link>
-        </li>
-    );
-}
-
-function FeatureGateLink({ address, tab }: { address: string; tab: Tab }) {
-    const accountDataPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
-    const featureInfo = useFeatureInfo({ address });
-    // Do not render "Feature Gate" tab on absent feature data
-    if (!featureInfo) {
-        return null;
-    }
-
-    return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={accountDataPath}>
-                {tab.title}
-            </Link>
-        </li>
-    );
-}
-
-// Checks that a compressed NFT exists at the given address and returns a link to the tab
-function CompressedNftLink({ tab, address, pubkey }: { tab: Tab; address: string; pubkey: PublicKey }) {
+function CompressedNftTabs({ pubkey }: { pubkey: PublicKey }) {
     const { url } = useCluster();
     const compressedNft = useCompressedNft({ address: pubkey.toString(), url });
-    const tabPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
 
     if (!compressedNft || !compressedNft.compression.compressed) {
         return null;
     }
 
     return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={tabPath}>
-                {tab.title}
-            </Link>
-        </li>
+        <>
+            <NavigationTabLink path="metadata" title="Metadata" />
+            <NavigationTabLink path="attributes" title="Attributes" />
+            <NavigationTabLink path="compression" title="Compression" />
+        </>
     );
 }
 
-// Checks that a program multisig exists at the given address and returns a link to the tab
-function ProgramMultisigLink({
-    tab,
-    address,
-    authority,
-}: {
-    tab: Tab;
-    address: string;
-    authority: PublicKey | null | undefined;
-}) {
+function ProgramMultisigTab({ authority }: { authority: PublicKey | null | undefined }) {
     const { cluster } = useCluster();
     const { data: squadMapInfo, error } = useSquadsMultisigLookup(authority, cluster);
-    const tabPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
+
     if (!squadMapInfo || error || !squadMapInfo.isSquad) {
         return null;
     }
 
-    return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={tabPath}>
-                {tab.title}
-            </Link>
-        </li>
-    );
+    return <NavigationTabLink path="program-multisig" title="Program Multisig" />;
 }
 
-function TokenExtensionsLink({ address, tab }: { address: string; tab: Tab }) {
-    const accountDataPath = useClusterPath({ pathname: `/address/${address}/${tab.path}` });
-    const selectedLayoutSegment = useSelectedLayoutSegment();
-    const isActive = selectedLayoutSegment === tab.path;
-
-    return (
-        <li key={tab.slug} className="nav-item">
-            <Link className={`${isActive ? 'active ' : ''}nav-link`} href={accountDataPath}>
-                {tab.title}
-            </Link>
-        </li>
-    );
+function WalletSubscriptionsTab({ walletAddress }: { walletAddress: string | null }) {
+    // Non-suspense: this fires on every non-executable account page, so a failing RPC
+    // (e.g. getProgramAccounts disabled/rate-limited) must hide the tab, not throw and
+    // take down the whole account page. Mirrors ProgramMultisigTab's error handling.
+    const { data: delegationsData, error: delegationsError } = useWalletDelegations(walletAddress, {
+        suspense: false,
+    });
+    const { data: plansData, error: plansError } = useWalletPlans(walletAddress, { suspense: false });
+    if (delegationsError || plansError) return null;
+    const hasAny =
+        (delegationsData?.delegations.length ?? 0) > 0 ||
+        (delegationsData?.delegationsReceived.length ?? 0) > 0 ||
+        (plansData?.plans.length ?? 0) > 0;
+    if (!hasAny) return null;
+    return <NavigationTabLink path="subscriptions" title="Subscriptions" />;
 }

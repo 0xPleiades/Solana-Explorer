@@ -1,12 +1,114 @@
+// Inspector Account List. It merges what used to be a standalone "SOL Balance Changes" table into the
+// Account List as a "Change" column placed right before "Post Balance". The change values come from the
+// simulation:
+//   • before a run — the first row shows a small Simulate button in place of the value; every other row
+//     shows a grey dash that turns into a Simulate button on row hover;
+//   • after a run — each account shows its SOL balance delta (a grey dash if it did not change).
+// On mobile each account renders as its own tappable card that opens a bottom detail drawer.
+import { Address } from '@components/common/Address';
+import { BalanceDelta } from '@components/common/BalanceDelta';
 import { ErrorCard } from '@components/common/ErrorCard';
-import { TableCardBody } from '@components/common/TableCardBody';
-import { PublicKey, VersionedMessage } from '@solana/web3.js';
-import React from 'react';
+import { SolBalance } from '@components/common/SolBalance';
+import { RawDataField } from '@components/shared/RawDataField';
+import { cn } from '@components/shared/utils';
+import { useLazyRawAccountData } from '@entities/account';
+import { isResolvedLookupTable, rowAddresses } from '@entities/transaction-data';
+import {
+    useAccountInfo,
+    useAccountInfos,
+    useAddressLookupTable,
+    useAddressLookupTables,
+    useFetchAccountInfo,
+} from '@providers/accounts';
+import { useCluster } from '@providers/cluster';
+import { type PublicKey, type VersionedMessage } from '@solana/web3.js';
+import { ClusterStatus } from '@utils/cluster';
+import BN from 'bn.js';
+import React, { useMemo } from 'react';
+import { AlertTriangle, Code } from 'react-feather';
 
-import { AddressFromLookupTableWithContext, AddressWithContext } from './AddressWithContext';
+import { Badge } from '@/app/components/shared/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/app/components/shared/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/app/components/shared/ui/tooltip';
+import type { SolBalanceChange } from '@/app/features/instruction-simulation/lib/types';
+import { useLastSimulatedAt } from '@/app/features/instruction-simulation/model/use-last-simulated-at';
+import { type SimulationState } from '@/app/features/instruction-simulation/model/use-simulation';
+import { LastSimulatedAtLabel } from '@/app/features/instruction-simulation/ui/LastSimulatedAt';
+import { SimulateButton } from '@/app/features/instruction-simulation/ui/SimulateButton';
+import { SimulatedBadge } from '@/app/features/instruction-simulation/ui/SimulatedBadge';
+import { FetchStatus } from '@/app/providers/cache';
+import { DataListCard, DataListRow } from '@/app/shared/ui/DataListCard';
+import { ROW_PADDING } from '@/app/shared/ui/spacing';
 
-export function AccountsCard({ message }: { message: VersionedMessage }) {
-    const [expanded, setExpanded] = React.useState(true);
+import { AccountDetailDrawer } from './AccountDetailDrawer';
+import { AddressFromLookupTableWithContext } from './AddressWithContext';
+import { hasReliableChanges, simulationFailureMessage } from './simulation-changes';
+import { SimulationHint } from './SimulationHint';
+
+// Fallback for callers (isolated stories/tests) that don't own a simulation: the Change column then
+// simply offers the Simulate affordance, which is a no-op until wired to a real run.
+const IDLE_SIMULATION: SimulationState = { simulate: () => undefined, status: 'idle' };
+
+// Shared 6-column track for the desktop (lg+) table: # / Address / Owner / Change / Post Balance / Size.
+// The header row and every body row use the same columns so they stay aligned.
+const COLS =
+    'grid-cols-[minmax(auto,1.25rem)_1fr_minmax(auto,180px)_minmax(auto,140px)_minmax(auto,160px)_minmax(auto,110px)]';
+
+// Desktop-only body row (lg+); the merged "Change" column sits between Owner and Post Balance. Below lg
+// the row uses the mobile layout (AccountRowLayout).
+const ROW_GRID_DESKTOP = cn(
+    'hidden min-h-9 lg:grid',
+    ROW_PADDING,
+    'items-start gap-x-5 whitespace-nowrap text-sm',
+    "[grid-template-areas:'number_address_owned_change_balance_size']",
+    COLS,
+);
+
+// Fixed-width per-row field label for the mobile layout.
+const MOBILE_LABEL = 'w-16 shrink-0 text-outer-space-300';
+
+// Header row (lg+ only).
+const HEADER_GRID = cn(
+    'hidden gap-5 lg:grid',
+    ROW_PADDING,
+    COLS,
+    'text-xs uppercase text-outer-space-300',
+    'border-1 border-b border-white/10 [border-bottom-style:solid]',
+);
+
+export function AccountsCard({
+    message,
+    simulation: simulationProp,
+}: {
+    message: VersionedMessage;
+    simulation?: SimulationState;
+}) {
+    const simulation = simulationProp ?? IDLE_SIMULATION;
+
+    const lookupTableAddresses = useMemo(
+        () => message.addressTableLookups.map(lookup => lookup.accountKey.toBase58()),
+        [message],
+    );
+    const lookupTables = useAddressLookupTables(lookupTableAddresses);
+
+    const addresses = rowAddresses(message, lookupTables);
+
+    const accounts = useAccountInfos(addresses);
+
+    // Tracked here (a persistently-mounted host) so the header popover can show the last run's time even
+    // though its own content mounts only while open.
+    const simulatedAt = useLastSimulatedAt(simulation);
+
+    // Index the simulated SOL balance changes by account so each row can look up its own delta.
+    const changeByKey = React.useMemo(() => {
+        const map = new Map<string, SolBalanceChange>();
+        if (hasReliableChanges(simulation)) {
+            for (const change of simulation.result.solBalanceChanges ?? []) {
+                map.set(change.pubkey.toBase58(), change);
+            }
+        }
+        return map;
+    }, [simulation]);
 
     const { validMessage, error } = React.useMemo(() => {
         const { numRequiredSignatures, numReadonlySignedAccounts, numReadonlyUnsignedAccounts } = message.header;
@@ -25,9 +127,9 @@ export function AccountsCard({ message }: { message: VersionedMessage }) {
         };
     }, [message]);
 
-    const { accountRows, numAccounts } = React.useMemo(() => {
+    const { accountRows } = React.useMemo(() => {
         const message = validMessage;
-        if (!message) return { accountRows: undefined, numAccounts: 0 };
+        if (!message) return { accountRows: undefined };
         const staticAccountRows = message.staticAccountKeys.map((publicKey, accountIndex) => {
             const { numRequiredSignatures, numReadonlySignedAccounts, numReadonlyUnsignedAccounts } = message.header;
 
@@ -44,9 +146,11 @@ export function AccountsCard({ message }: { message: VersionedMessage }) {
 
             const props = {
                 accountIndex,
+                changeByKey,
                 publicKey,
                 readOnly,
                 signer,
+                simulation,
             };
 
             return <AccountRow key={accountIndex} {...props} />;
@@ -57,9 +161,11 @@ export function AccountsCard({ message }: { message: VersionedMessage }) {
             return lookup.writableIndexes.map(lookupTableIndex => {
                 const props = {
                     accountIndex,
+                    changeByKey,
                     lookupTableIndex,
                     lookupTableKey: lookup.accountKey,
                     readOnly: false,
+                    simulation,
                 };
 
                 accountIndex += 1;
@@ -71,9 +177,11 @@ export function AccountsCard({ message }: { message: VersionedMessage }) {
             return lookup.readonlyIndexes.map(lookupTableIndex => {
                 const props = {
                     accountIndex,
+                    changeByKey,
                     lookupTableIndex,
                     lookupTableKey: lookup.accountKey,
                     readOnly: true,
+                    simulation,
                 };
 
                 accountIndex += 1;
@@ -83,59 +191,50 @@ export function AccountsCard({ message }: { message: VersionedMessage }) {
 
         return {
             accountRows: [...staticAccountRows, ...writableLookupTableRows, ...readonlyLookupTableRows],
-            numAccounts: accountIndex,
         };
-    }, [validMessage]);
+    }, [validMessage, simulation, changeByKey]);
+
+    const tablesSettled = lookupTables.every(isResolvedLookupTable);
+    const spaces = accounts.map(entry => entry?.data?.space);
+    const totalAccountSize =
+        tablesSettled && spaces.every(space => space !== undefined)
+            ? spaces.reduce((total, space) => total + space, 0)
+            : undefined;
 
     if (error) {
         return <ErrorCard text={`Unable to display accounts. ${error}`} />;
     }
 
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title">{`Account List (${numAccounts})`}</h3>
-                <button
-                    className={`btn btn-sm d-flex ${expanded ? 'btn-black active' : 'btn-white'}`}
-                    onClick={() => setExpanded(e => !e)}
-                >
-                    {expanded ? 'Collapse' : 'Expand'}
-                </button>
-            </div>
-            {expanded && <TableCardBody>{accountRows}</TableCardBody>}
-        </div>
-    );
-}
-
-function AccountFromLookupTableRow({
-    accountIndex,
-    lookupTableKey,
-    lookupTableIndex,
-    readOnly,
-}: {
-    accountIndex: number;
-    lookupTableKey: PublicKey;
-    lookupTableIndex: number;
-    readOnly: boolean;
-}) {
-    return (
-        <tr>
-            <td>
-                <div className="d-flex align-items-start flex-column">
-                    Account #{accountIndex + 1}
-                    <span className="mt-1">
-                        {!readOnly && <span className="badge bg-danger-soft me-1">Writable</span>}
-                        <span className="badge bg-gray-soft">Address Table Lookup</span>
-                    </span>
+        <DataListCard title="Account List" collapsible={false} belowTitle={<SimulationHint simulation={simulation} />}>
+            <div className={HEADER_GRID}>
+                <div>#</div>
+                <div>Address</div>
+                <div>Owner</div>
+                <div className="flex items-center justify-end gap-1.5 text-right">
+                    Change (SOL)
+                    {/* "S" badge marks this as a simulation-derived column; hovering it opens a popover
+                        with the Simulate control (and the last run's time once one has completed). */}
+                    <SimulatedHeaderTag simulation={simulation} simulatedAt={simulatedAt} />
                 </div>
-            </td>
-            <td className="text-lg-end">
-                <AddressFromLookupTableWithContext
-                    lookupTableKey={lookupTableKey}
-                    lookupTableIndex={lookupTableIndex}
-                />
-            </td>
-        </tr>
+                <div className="text-right">Post Balance (SOL)</div>
+                <div className="text-right">Size</div>
+            </div>
+            {accountRows}
+            {totalAccountSize !== undefined && totalAccountSize > 0 && (
+                <div className="py-2.5 text-sm text-outer-space-300 lg:ml-10 lg:px-3">
+                    <div className="flex flex-col">
+                        <div className="flex items-baseline gap-2">
+                            <span>Total Account Size:</span>
+                            <span className="text-white">{totalAccountSize.toLocaleString('en-US')} bytes</span>
+                        </div>
+                        <span className="text-xs">
+                            Current data. This data may have been different at the time of the transaction.
+                        </span>
+                    </div>
+                </div>
+            )}
+        </DataListCard>
     );
 }
 
@@ -144,26 +243,392 @@ function AccountRow({
     publicKey,
     signer,
     readOnly,
+    simulation,
+    changeByKey,
 }: {
     accountIndex: number;
     publicKey: PublicKey;
     signer: boolean;
     readOnly: boolean;
+    simulation: SimulationState;
+    changeByKey: Map<string, SolBalanceChange>;
 }) {
     return (
-        <tr>
-            <td>
-                <div className="d-flex align-items-start flex-column">
-                    Account #{accountIndex + 1}
-                    <span className="mt-1">
-                        {signer && <span className="badge bg-info-soft me-1">Signer</span>}
-                        {!readOnly && <span className="badge bg-danger-soft">Writable</span>}
+        <AccountRowLayout
+            index={accountIndex}
+            pubkey={publicKey}
+            addressSlot={<Address pubkey={publicKey} link />}
+            simulation={simulation}
+            changeByKey={changeByKey}
+            badges={
+                <>
+                    {signer && (
+                        <Badge ui="dashkit" variant="info">
+                            Signer
+                        </Badge>
+                    )}
+                    {!readOnly && (
+                        <Badge ui="dashkit" variant="destructive">
+                            Writable
+                        </Badge>
+                    )}
+                </>
+            }
+        />
+    );
+}
+
+function AccountFromLookupTableRow({
+    accountIndex,
+    lookupTableKey,
+    lookupTableIndex,
+    readOnly,
+    simulation,
+    changeByKey,
+}: {
+    accountIndex: number;
+    lookupTableKey: PublicKey;
+    lookupTableIndex: number;
+    readOnly: boolean;
+    simulation: SimulationState;
+    changeByKey: Map<string, SolBalanceChange>;
+}) {
+    const lookupTableInfo = useAddressLookupTable(lookupTableKey.toBase58());
+    const lookupTable = lookupTableInfo && lookupTableInfo[0];
+    const pubkey =
+        lookupTable && typeof lookupTable !== 'string' && lookupTableIndex < lookupTable.state.addresses.length
+            ? lookupTable.state.addresses[lookupTableIndex]
+            : undefined;
+
+    return (
+        <AccountRowLayout
+            index={accountIndex}
+            pubkey={pubkey}
+            addressSlot={
+                <AddressFromLookupTableWithContext
+                    lookupTableKey={lookupTableKey}
+                    lookupTableIndex={lookupTableIndex}
+                    hideInfo
+                    align="left"
+                />
+            }
+            simulation={simulation}
+            changeByKey={changeByKey}
+            badges={
+                <>
+                    {!readOnly && (
+                        <Badge ui="dashkit" variant="destructive">
+                            Writable
+                        </Badge>
+                    )}
+                    <Badge ui="dashkit" variant="gray">
+                        Address Table Lookup
+                    </Badge>
+                </>
+            }
+        />
+    );
+}
+
+// Zero delta reused for unchanged accounts after a run — BalanceDelta renders it as the "+0" badge.
+const ZERO_DELTA = new BN(0);
+
+function ChangeDash() {
+    return <span className="text-outer-space-500">—</span>;
+}
+
+// Change-column marker for a run that reverted or failed: a small "Failed" label. Shown in place of a
+// delta so the row reflects that a run happened and did not produce usable balance changes (re-running
+// stays available from the column header's "S" popover and the Simulation panel).
+//
+// `interactive` controls whether the reason is shown here via a tooltip:
+//   • desktop rows and the mobile detail drawer pass `interactive` — the tooltip carries the reason
+//     (hover on desktop, tap on touch). In the drawer it must sit above the Drawer, so its content is
+//     lifted past the drawer's z-index.
+//   • the mobile list summary leaves it off — there the whole card is a tap target, so the label stays a
+//     plain, non-interactive marker and a tap falls through to open the detail drawer (which shows the
+//     full reason).
+function ChangeFailed({ message, interactive = false }: { message: string; interactive?: boolean }) {
+    const label = (
+        <span className={cn('inline-flex items-center gap-1 text-sm leading-none text-yellow-500')}>
+            <AlertTriangle size={14} />
+            Failed
+        </span>
+    );
+
+    if (!interactive) return label;
+
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <span className="inline-flex cursor-default">{label}</span>
+            </TooltipTrigger>
+            {/* z above the mobile detail Drawer (z-[1201]) so the reason is visible when the tooltip
+                lives inside the drawer. */}
+            <TooltipContent side="top" className="z-[1300] max-w-56 break-words">
+                {message}
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
+// The Change-column form of the shared Simulate button. Both variants are pinned to `!h-5` — the row's
+// text line-height — so the button never grows the row taller than the plain dash/delta state (i.e. the
+// row height doesn't jump between pre-run, hover and post-run). `table` is the tiny in-cell form;
+// `drawer` keeps the same height with slightly larger, more legible text for the detail popup.
+function ChangeSimulateButton({
+    simulation,
+    size = 'table',
+}: {
+    simulation: SimulationState;
+    size?: 'table' | 'drawer';
+}) {
+    return (
+        <SimulateButton
+            simulation={simulation}
+            size="compact"
+            className={cn('!h-5 leading-none', size === 'drawer' ? 'px-2.5 !text-xs' : '!px-2 !text-[10px]')}
+        />
+    );
+}
+
+// The "S" column-header badge. Hovering it opens a popover holding the Simulate control, plus the
+// "Simulated at …" line once a run has completed. It is a popover (not a tooltip) because the content is
+// interactive; opening is driven by hover with a short close delay so the pointer can travel from the
+// badge into the popover (which portals out of the header) without it snapping shut.
+function SimulatedHeaderTag({ simulation, simulatedAt }: { simulation: SimulationState; simulatedAt?: Date }) {
+    const [open, setOpen] = React.useState(false);
+    const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const openNow = () => {
+        if (closeTimer.current) clearTimeout(closeTimer.current);
+        setOpen(true);
+    };
+    const closeSoon = () => {
+        if (closeTimer.current) clearTimeout(closeTimer.current);
+        closeTimer.current = setTimeout(() => setOpen(false), 120);
+    };
+
+    React.useEffect(() => () => void (closeTimer.current && clearTimeout(closeTimer.current)), []);
+
+    return (
+        <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+                <span className="cursor-default" onMouseEnter={openNow} onMouseLeave={closeSoon}>
+                    <SimulatedBadge>S</SimulatedBadge>
+                </span>
+            </PopoverTrigger>
+            <PopoverContent
+                side="top"
+                align="end"
+                onMouseEnter={openNow}
+                onMouseLeave={closeSoon}
+                onOpenAutoFocus={e => e.preventDefault()}
+                className="flex flex-col gap-2 p-3"
+            >
+                <ChangeSimulateButton simulation={simulation} />
+                {simulatedAt && <LastSimulatedAtLabel at={simulatedAt} />}
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+// Change column cell. Post-run: the account's SOL delta (or a dash if unchanged). Pre-run behaviour
+// depends on `mode`:
+//   • 'table' (desktop rows): a dash that swaps to the Simulate button on row hover (the row wrapper
+//     carries `group`; gated to mouse devices via `@media (hover: hover) and (pointer: fine)` so on touch,
+//     where hover is emulated and would stick, the dash simply stays).
+//   • 'plain' (mobile list summary): just the dash — the Simulate button is not shown in the list.
+//   • 'action' (mobile detail drawer): a visible Simulate button, so a run can be started from there.
+function ChangeCell({
+    simulation,
+    changeByKey,
+    pubkey,
+    mode = 'table',
+}: {
+    simulation: SimulationState;
+    changeByKey: Map<string, SolBalanceChange>;
+    pubkey?: PublicKey;
+    mode?: 'table' | 'plain' | 'action';
+}) {
+    if (hasReliableChanges(simulation)) {
+        const change = pubkey ? changeByKey.get(pubkey.toBase58()) : undefined;
+        // Unchanged accounts render a "+0" delta badge, matching the transaction details page.
+        return <BalanceDelta delta={change ? change.delta : ZERO_DELTA} isSol />;
+    }
+
+    // A reverted/failed run has no reliable deltas: show a "Failed" marker in every mode so the table
+    // and drawer reflect that a run happened, rather than silently reverting to the Simulate affordance.
+    // The reason is exposed via a tooltip on the desktop table and in the drawer; in the mobile list the
+    // marker stays plain so a tap opens the drawer (which carries the reason) instead.
+    const failure = simulationFailureMessage(simulation);
+    if (failure) return <ChangeFailed message={failure} interactive={mode !== 'plain'} />;
+
+    if (mode === 'plain') return <ChangeDash />;
+    if (mode === 'action') return <ChangeSimulateButton simulation={simulation} size="drawer" />;
+
+    return (
+        <>
+            <span className="[@media(hover:hover)_and_(pointer:fine)]:group-hover:hidden">
+                <ChangeDash />
+            </span>
+            <span className="hidden [@media(hover:hover)_and_(pointer:fine)]:group-hover:inline-flex">
+                <ChangeSimulateButton simulation={simulation} />
+            </span>
+        </>
+    );
+}
+
+function AccountRowLayout({
+    index,
+    pubkey,
+    addressSlot,
+    badges,
+    simulation,
+    changeByKey,
+}: {
+    index: number;
+    pubkey?: PublicKey;
+    addressSlot: React.ReactNode;
+    badges?: React.ReactNode;
+    simulation: SimulationState;
+    changeByKey: Map<string, SolBalanceChange>;
+}) {
+    const address = pubkey?.toBase58();
+    const { account, status } = useInspectorAccountInfo(pubkey);
+    // Mobile-only: tapping the row opens a bottom drawer with the account's full details.
+    const [drawerOpen, setDrawerOpen] = React.useState(false);
+
+    let ownedNode: React.ReactNode = null;
+    let balanceNode: React.ReactNode = null;
+    let sizeNode: React.ReactNode = null;
+
+    if (!account && status === FetchStatus.FetchFailed) {
+        ownedNode = <span className="text-outer-space-300">Failed to fetch account</span>;
+    } else if (!account) {
+        ownedNode = (
+            <span className="text-outer-space-300">
+                <span className="spinner-grow spinner-grow-sm mr-1.5"></span>
+                Loading
+            </span>
+        );
+    } else if (account.lamports === 0) {
+        ownedNode = <span className="text-outer-space-300">Account doesn&apos;t exist</span>;
+    } else {
+        ownedNode = <Address pubkey={account.owner} link />;
+        balanceNode = <SolBalance lamports={account.lamports} />;
+        if (address !== undefined) {
+            sizeNode = <AccountDataSize space={account.space} address={address} />;
+        }
+    }
+
+    return (
+        // `group` lets the desktop Change cell reveal its Simulate button on row hover.
+        <DataListRow className="group">
+            {/* Mobile: tapping opens the detail drawer; Owner and Size drop out here and live there. */}
+            <div
+                className={cn('flex flex-col gap-1 p-3 text-sm lg:hidden', pubkey && 'cursor-pointer')}
+                onClick={() => pubkey && setDrawerOpen(true)}
+            >
+                <div className="flex items-start justify-between gap-2">
+                    {/* `pointer-events-none` so a tap opens the drawer instead of following the address
+                        link; the link is recoloured green to read as a plain value (matches the TX page). */}
+                    <div className="pointer-events-none min-w-0 [&_a]:!text-[#33a382] [&_a]:!no-underline">
+                        {addressSlot}
+                        <span className="mt-1 flex flex-wrap items-center gap-1 empty:hidden">{badges}</span>
+                    </div>
+                    <span className="shrink-0 text-outer-space-300">{index + 1}</span>
+                </div>
+                <div className="flex items-start gap-2">
+                    <span className={MOBILE_LABEL}>Change</span>
+                    {/* `plain`: the list never shows the Simulate button — it lives in the drawer. */}
+                    <span className="min-w-0">
+                        <ChangeCell simulation={simulation} changeByKey={changeByKey} pubkey={pubkey} mode="plain" />
                     </span>
                 </div>
-            </td>
-            <td className="text-lg-end">
-                <AddressWithContext pubkey={publicKey} />
-            </td>
-        </tr>
+                {balanceNode && (
+                    <div className="flex items-start gap-2">
+                        <span className={MOBILE_LABEL}>Balance</span>
+                        <span className="min-w-0">{balanceNode}</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Desktop layout (lg+): 6-column grid driven by the header. */}
+            <div className={ROW_GRID_DESKTOP}>
+                <div className="text-outer-space-300 [grid-area:number]">{index + 1}</div>
+                <div className="min-w-0 [grid-area:address]">
+                    {addressSlot}
+                    <span className="mt-1 flex flex-wrap items-center gap-1 empty:hidden">{badges}</span>
+                </div>
+                <div className="justify-self-start [grid-area:owned]">{ownedNode}</div>
+                <div className="justify-self-end [grid-area:change]">
+                    <ChangeCell simulation={simulation} changeByKey={changeByKey} pubkey={pubkey} mode="table" />
+                </div>
+                <div className="justify-self-end [grid-area:balance]">{balanceNode}</div>
+                <div className="justify-self-end [grid-area:size]">{sizeNode}</div>
+            </div>
+
+            {/* Mobile detail drawer (portaled; only reachable via the mobile summary's tap). Carries the
+                same fields as the list — Owner, Change, Balance, Size — with the Simulate button living in
+                its Change row (`mode="action"`). */}
+            {pubkey && (
+                <AccountDetailDrawer
+                    open={drawerOpen}
+                    onOpenChange={setDrawerOpen}
+                    index={index}
+                    pubkey={pubkey}
+                    badges={badges}
+                    ownerSlot={ownedNode}
+                    changeSlot={
+                        <ChangeCell simulation={simulation} changeByKey={changeByKey} pubkey={pubkey} mode="action" />
+                    }
+                    balanceSlot={balanceNode}
+                    sizeSlot={sizeNode}
+                />
+            )}
+        </DataListRow>
     );
+}
+
+function AccountDataSize({ space, address }: { space: number | undefined; address: string }) {
+    const { data, error, load, loading } = useLazyRawAccountData(address);
+
+    if (space === undefined) return <span className="text-outer-space-300">Unknown</span>;
+    if (space === 0) return <span className="text-outer-space-300">0 bytes</span>;
+
+    return (
+        <Popover onOpenChange={open => open && load()}>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    className="inline-flex cursor-pointer appearance-none items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-outer-space-300 transition-colors hover:text-white"
+                >
+                    <Code size={11} />
+                    <span>{space.toLocaleString('en-US')} bytes</span>
+                </button>
+            </PopoverTrigger>
+            {/* RawDataField brings its own card chrome, so the popover wrapper is left transparent (its
+                drop shadow is kept for depth). */}
+            <PopoverContent align="end" className="w-auto !border-0 !bg-transparent p-0">
+                <RawDataField data={data} error={error} filename={address} loading={loading} />
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+// Fetches on-chain account state (owner, balance, space) from the accounts provider.
+function useInspectorAccountInfo(pubkey?: PublicKey) {
+    const address = pubkey?.toBase58() ?? '';
+    const fetchAccount = useFetchAccountInfo();
+    const info = useAccountInfo(address);
+    const { status } = useCluster();
+
+    React.useEffect(() => {
+        if (pubkey && !info && status === ClusterStatus.Connected) {
+            fetchAccount(pubkey, 'skip');
+        }
+    }, [address, status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    return { account: info?.data, status: info?.status };
 }

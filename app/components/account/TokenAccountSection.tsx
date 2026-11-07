@@ -1,10 +1,12 @@
 import ScaledUiAmountMultiplierTooltip from '@components/account/token-extensions/ScaledUiAmountMultiplierTooltip';
 import { Address } from '@components/common/Address';
 import { Copyable } from '@components/common/Copyable';
-import { TableCardBody } from '@components/common/TableCardBody';
-import { Account, NFTData, TokenProgramData, useFetchAccountInfo } from '@providers/accounts';
+import { useRefreshAccount } from '@entities/account';
+import { isMetaplexNFT } from '@entities/nft';
+import { AccountCard } from '@features/account';
+import { isSome } from '@metaplex-foundation/umi';
+import { Account, NFTData } from '@providers/accounts';
 import { TOKEN_2022_PROGRAM_ID, useScaledUiAmountForMint } from '@providers/accounts/tokens';
-import isMetaplexNFT from '@providers/accounts/utils/isMetaplexNFT';
 import { useCluster } from '@providers/cluster';
 import { PublicKey } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
@@ -28,6 +30,7 @@ import {
     MintCloseAuthority,
     PausableConfig,
     PermanentDelegate,
+    PermissionedBurnConfig,
     ScaledUiAmountConfig,
     TokenExtension,
     TokenExtensionType,
@@ -42,10 +45,17 @@ import {
 import { BigNumber } from 'bignumber.js';
 import { capitalCase } from 'change-case';
 import { useEffect, useMemo, useState } from 'react';
-import { ExternalLink, RefreshCw } from 'react-feather';
+import { ExternalLink as ExternalLinkIcon } from 'react-feather';
 import { create } from 'superstruct';
 import useSWR from 'swr';
 
+import { Badge } from '@/app/components/shared/ui/badge';
+import { ExternalLink } from '@/app/components/shared/ui/external-link';
+import { invariant } from '@/app/shared/lib/invariant';
+import { Logger } from '@/app/shared/lib/logger';
+import { getSafeExternalHref } from '@/app/shared/lib/url';
+import { KeyValue, type KeyValueRow, type KeyValueRowInput, KeyValueRows } from '@/app/shared/ui/key-value';
+import { BaseTable } from '@/app/shared/ui/Table';
 import { FullLegacyTokenInfo, getTokenInfo, getTokenInfoSwrKey } from '@/app/utils/token-info';
 
 import { TokenExtensionsStatusRow } from './token-extensions/TokenExtensionsStatusRow';
@@ -54,6 +64,7 @@ import { UnknownAccountCard } from './UnknownAccountCard';
 const getEthAddress = (link?: string) => {
     let address = '';
     if (link) {
+        // eslint-disable-next-line no-restricted-syntax -- extract Ethereum address from URL
         const extractEth = link.match(/0x[a-fA-F0-9]{40,64}/);
 
         if (extractEth) {
@@ -64,10 +75,11 @@ const getEthAddress = (link?: string) => {
     return address;
 };
 
-const StatusBadge = ({ status }: { status: string }) => {
-    const badgeClass = status === 'initialized' ? 'bg-success-soft' : 'bg-warning-soft';
-    return <span className={`badge ${badgeClass}`}>{capitalCase(status)}</span>;
-};
+export const StatusBadge = ({ status }: { status: string }) => (
+    <Badge ui="dashkit" variant={status === 'initialized' ? 'success' : 'warning'}>
+        {capitalCase(status)}
+    </Badge>
+);
 
 export function TokenAccountSection({
     account,
@@ -85,11 +97,13 @@ export function TokenAccountSection({
             case 'mint': {
                 const mintInfo = create(tokenAccount.info, MintAccountInfo);
 
-                if (isMetaplexNFT(account.data.parsed, mintInfo)) {
+                const parsedData = account.data.parsed;
+                if (isMetaplexNFT(parsedData, mintInfo)) {
+                    invariant(parsedData.nftData, 'isMetaplexNFT returned true but nftData is missing');
                     return (
                         <NonFungibleTokenMintAccountCard
                             account={account}
-                            nftData={(account.data.parsed as TokenProgramData).nftData!}
+                            nftData={parsedData.nftData}
                             mintInfo={mintInfo}
                         />
                     );
@@ -108,7 +122,7 @@ export function TokenAccountSection({
         }
     } catch (err) {
         if (cluster !== Cluster.Custom) {
-            console.error(err, {
+            Logger.error(err, {
                 address: account.pubkey.toBase58(),
             });
         }
@@ -125,8 +139,7 @@ function FungibleTokenMintAccountCard({
     mintInfo: MintAccountInfo;
     tokenInfo?: FullLegacyTokenInfo;
 }) {
-    const fetchInfo = useFetchAccountInfo();
-    const refresh = () => fetchInfo(account.pubkey, 'parsed');
+    const fetchInfo = useRefreshAccount();
 
     const bridgeContractAddress = getEthAddress(tokenInfo?.extensions?.bridgeContract);
     const assetContractAddress = getEthAddress(tokenInfo?.extensions?.assetContract);
@@ -135,111 +148,84 @@ function FungibleTokenMintAccountCard({
     mintExtensions?.sort(cmpExtension);
     const scaledUiAmountMultiplier = getCurrentTokenScaledUiAmountMultiplier(mintExtensions);
 
+    const rows: KeyValueRowInput[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        {
+            label: mintInfo.mintAuthority === null ? 'Fixed Supply' : 'Current Supply',
+            value: (
+                <>
+                    <span>
+                        {normalizeTokenAmount(
+                            Number(mintInfo.supply) * Number(scaledUiAmountMultiplier),
+                            mintInfo.decimals,
+                        ).toLocaleString('en-US', {
+                            maximumFractionDigits: 20,
+                        })}
+                    </span>
+                    <ScaledUiAmountMultiplierTooltip
+                        rawAmount={normalizeTokenAmount(Number(mintInfo.supply), mintInfo.decimals).toString()}
+                        scaledUiAmountMultiplier={scaledUiAmountMultiplier}
+                    />
+                </>
+            ),
+        },
+        tokenInfo?.extensions?.website && {
+            label: 'Website',
+            value: (
+                <ExternalLink href={tokenInfo.extensions.website}>
+                    {tokenInfo.extensions.website}
+                    <ExternalLinkIcon className="ml-1.5 align-text-top" size={13} />
+                </ExternalLink>
+            ),
+        },
+        mintInfo.mintAuthority && {
+            label: 'Mint Authority',
+            value: <Address pubkey={mintInfo.mintAuthority} link />,
+        },
+        mintInfo.freezeAuthority && {
+            label: 'Freeze Authority',
+            value: <Address pubkey={mintInfo.freezeAuthority} link />,
+        },
+        { label: 'Decimals', value: mintInfo.decimals },
+        !mintInfo.isInitialized && { label: 'Status', value: 'Uninitialized' },
+        tokenInfo?.extensions?.bridgeContract &&
+            bridgeContractAddress && {
+                label: 'Bridge Contract',
+                value: (
+                    <Copyable text={bridgeContractAddress}>
+                        <ExternalLink href={tokenInfo.extensions.bridgeContract}>{bridgeContractAddress}</ExternalLink>
+                    </Copyable>
+                ),
+            },
+        tokenInfo?.extensions?.assetContract &&
+            assetContractAddress && {
+                label: 'Bridged Asset Contract',
+                value: (
+                    <Copyable text={assetContractAddress}>
+                        <ExternalLink href={tokenInfo.extensions.assetContract}>{assetContractAddress}</ExternalLink>
+                    </Copyable>
+                ),
+            },
+    ];
+
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">
-                    {tokenInfo
-                        ? 'Overview'
-                        : account.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58()
-                        ? 'Token-2022 Mint'
-                        : 'Token Mint'}
-                </h3>
-                <button className="btn btn-white btn-sm" onClick={refresh}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>{mintInfo.mintAuthority === null ? 'Fixed Supply' : 'Current Supply'}</td>
-                    <td className="text-lg-end">
-                        <span>
-                            {normalizeTokenAmount(
-                                Number(mintInfo.supply) * Number(scaledUiAmountMultiplier),
-                                mintInfo.decimals
-                            ).toLocaleString('en-US', {
-                                maximumFractionDigits: 20,
-                            })}
-                        </span>
-                        <ScaledUiAmountMultiplierTooltip
-                            rawAmount={normalizeTokenAmount(Number(mintInfo.supply), mintInfo.decimals).toString()}
-                            scaledUiAmountMultiplier={scaledUiAmountMultiplier}
-                        />
-                    </td>
-                </tr>
-                {tokenInfo?.extensions?.website && (
-                    <tr>
-                        <td>Website</td>
-                        <td className="text-lg-end">
-                            <a rel="noopener noreferrer" target="_blank" href={tokenInfo.extensions.website}>
-                                {tokenInfo.extensions.website}
-                                <ExternalLink className="align-text-top ms-2" size={13} />
-                            </a>
-                        </td>
-                    </tr>
-                )}
-                {mintInfo.mintAuthority && (
-                    <tr>
-                        <td>Mint Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={mintInfo.mintAuthority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                {mintInfo.freezeAuthority && (
-                    <tr>
-                        <td>Freeze Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={mintInfo.freezeAuthority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Decimals</td>
-                    <td className="text-lg-end">{mintInfo.decimals}</td>
-                </tr>
-                {!mintInfo.isInitialized && (
-                    <tr>
-                        <td>Status</td>
-                        <td className="text-lg-end">Uninitialized</td>
-                    </tr>
-                )}
-                {tokenInfo?.extensions?.bridgeContract && bridgeContractAddress && (
-                    <tr>
-                        <td>Bridge Contract</td>
-                        <td className="text-lg-end">
-                            <Copyable text={bridgeContractAddress}>
-                                <a href={tokenInfo.extensions.bridgeContract} target="_blank" rel="noreferrer">
-                                    {bridgeContractAddress}
-                                </a>
-                            </Copyable>
-                        </td>
-                    </tr>
-                )}
-                {tokenInfo?.extensions?.assetContract && assetContractAddress && (
-                    <tr>
-                        <td>Bridged Asset Contract</td>
-                        <td className="text-lg-end">
-                            <Copyable text={assetContractAddress}>
-                                <a href={tokenInfo.extensions.bridgeContract} target="_blank" rel="noreferrer">
-                                    {assetContractAddress}
-                                </a>
-                            </Copyable>
-                        </td>
-                    </tr>
-                )}
-                {mintExtensions && (
-                    <TokenExtensionsStatusRow address={account.pubkey.toBase58()} extensions={mintExtensions} />
-                )}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title={
+                tokenInfo
+                    ? 'Overview'
+                    : account.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58()
+                      ? 'Token-2022 Mint'
+                      : 'Token Mint'
+            }
+            account={account}
+            refresh={() => fetchInfo(account.pubkey, 'parsed')}
+            analyticsSection="token_mint_card"
+        >
+            <KeyValueRows rows={rows} />
+            {mintExtensions && (
+                <TokenExtensionsStatusRow address={account.pubkey.toBase58()} extensions={mintExtensions} />
+            )}
+        </AccountCard>
     );
 }
 
@@ -252,101 +238,68 @@ function NonFungibleTokenMintAccountCard({
     nftData: NFTData;
     mintInfo: MintAccountInfo;
 }) {
-    const fetchInfo = useFetchAccountInfo();
-    const refresh = () => fetchInfo(account.pubkey, 'parsed');
+    const fetchInfo = useRefreshAccount();
 
-    const collection = nftData.metadata.collection;
+    const collectionOpt = nftData.metadata.collection;
+    const collection = collectionOpt && isSome(collectionOpt) ? collectionOpt.value : null;
+    const maxSupplyOpt =
+        nftData.editionInfo.masterEdition && 'maxSupply' in nftData.editionInfo.masterEdition
+            ? nftData.editionInfo.masterEdition.maxSupply
+            : undefined;
+    const maxSupply = maxSupplyOpt && isSome(maxSupplyOpt) ? Number(maxSupplyOpt.value) : null;
+
+    const rows: KeyValueRowInput[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        { label: 'Owner', value: <Address pubkey={account.owner} link /> },
+        maxSupply != null && { label: 'Max Total Supply', value: maxSupply === 0 ? 1 : maxSupply },
+        nftData?.editionInfo.masterEdition != null && {
+            label: 'Current Supply',
+            value:
+                Number(nftData.editionInfo.masterEdition.supply) === 0
+                    ? 1
+                    : Number(nftData.editionInfo.masterEdition.supply),
+        },
+        collection?.verified && {
+            label: 'Verified Collection Address',
+            value: <Address pubkey={new PublicKey(collection.key.toString())} link />,
+        },
+        mintInfo.mintAuthority && {
+            label: 'Mint Authority',
+            value: <Address pubkey={mintInfo.mintAuthority} link />,
+        },
+        mintInfo.freezeAuthority && {
+            label: 'Freeze Authority',
+            value: <Address pubkey={mintInfo.freezeAuthority} link />,
+        },
+        {
+            label: 'Update Authority',
+            value: <Address pubkey={new PublicKey(nftData.metadata.updateAuthority.toString())} link />,
+        },
+        nftData?.json &&
+            nftData.json.external_url && {
+                label: 'Website',
+                value: (
+                    <ExternalLink href={nftData.json.external_url}>
+                        {nftData.json.external_url}
+                        <ExternalLinkIcon className="ml-1.5 align-text-top" size={13} />
+                    </ExternalLink>
+                ),
+            },
+        nftData?.metadata && {
+            label: 'Seller Fee',
+            value: `${nftData.metadata.sellerFeeBasisPoints / 100}%`,
+        },
+    ];
+
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Overview</h3>
-                <button className="btn btn-white btn-sm" onClick={refresh}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Owner</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.owner} alignRight link />
-                    </td>
-                </tr>
-                {nftData.editionInfo.masterEdition?.maxSupply && (
-                    <tr>
-                        <td>Max Total Supply</td>
-                        <td className="text-lg-end">
-                            {nftData.editionInfo.masterEdition.maxSupply.toNumber() === 0
-                                ? 1
-                                : nftData.editionInfo.masterEdition.maxSupply.toNumber()}
-                        </td>
-                    </tr>
-                )}
-                {nftData?.editionInfo.masterEdition?.supply && (
-                    <tr>
-                        <td>Current Supply</td>
-                        <td className="text-lg-end">
-                            {nftData.editionInfo.masterEdition.supply.toNumber() === 0
-                                ? 1
-                                : nftData.editionInfo.masterEdition.supply.toNumber()}
-                        </td>
-                    </tr>
-                )}
-                {!!collection?.verified && (
-                    <tr>
-                        <td>Verified Collection Address</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={new PublicKey(collection.key)} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                {mintInfo.mintAuthority && (
-                    <tr>
-                        <td>Mint Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={mintInfo.mintAuthority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                {mintInfo.freezeAuthority && (
-                    <tr>
-                        <td>Freeze Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={mintInfo.freezeAuthority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Update Authority</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={new PublicKey(nftData.metadata.updateAuthority)} alignRight link />
-                    </td>
-                </tr>
-                {nftData?.json && nftData.json.external_url && (
-                    <tr>
-                        <td>Website</td>
-                        <td className="text-lg-end">
-                            <a rel="noopener noreferrer" target="_blank" href={nftData.json.external_url}>
-                                {nftData.json.external_url}
-                                <ExternalLink className="align-text-top ms-2" size={13} />
-                            </a>
-                        </td>
-                    </tr>
-                )}
-                {nftData?.metadata.data && (
-                    <tr>
-                        <td>Seller Fee</td>
-                        <td className="text-lg-end">{`${nftData?.metadata.data.sellerFeeBasisPoints / 100}%`}</td>
-                    </tr>
-                )}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title="Overview"
+            account={account}
+            refresh={() => fetchInfo(account.pubkey, 'parsed')}
+            analyticsSection="nft_mint_card"
+        >
+            <KeyValueRows rows={rows} />
+        </AccountCard>
     );
 }
 
@@ -355,7 +308,7 @@ async function fetchTokenInfo([_, address, cluster, url]: ['get-token-info', str
 }
 
 function TokenAccountCard({ account, info }: { account: Account; info: TokenAccountInfo }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
     const [_, scaledUiAmountMultiplier] = useScaledUiAmountForMint(info.mint.toBase58(), info.tokenAmount.amount);
     const { cluster, url } = useCluster();
     const label = addressLabel(account.pubkey.toBase58(), cluster);
@@ -369,7 +322,7 @@ function TokenAccountCard({ account, info }: { account: Account; info: TokenAcco
     const balance = info.isNative ? (
         <>
             {'\u25ce'}
-            <span className="font-monospace">{new BigNumber(info.tokenAmount.uiAmountString).toFormat(9)}</span>
+            <span className="font-mono">{new BigNumber(info.tokenAmount.uiAmountString).toFormat(9)}</span>
         </>
     ) : (
         <>{info.tokenAmount.uiAmountString}</>
@@ -383,153 +336,91 @@ function TokenAccountCard({ account, info }: { account: Account; info: TokenAcco
         }
     }, [tokenInfo, info]);
 
+    const rows: KeyValueRowInput[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        label && { label: 'Address Label', value: label },
+        { label: 'Mint', value: <Address pubkey={info.mint} link tokenLabelInfo={tokenInfo} /> },
+        { label: 'Owner', value: <Address pubkey={info.owner} link /> },
+        {
+            label: <>Token balance {typeof symbol === 'string' && `(${symbol})`}</>,
+            value: (
+                <>
+                    {balance}
+                    <ScaledUiAmountMultiplierTooltip
+                        rawAmount={normalizeTokenAmount(
+                            Number(info.tokenAmount.amount),
+                            info.tokenAmount.decimals || 0,
+                        ).toString()}
+                        scaledUiAmountMultiplier={scaledUiAmountMultiplier}
+                    />
+                </>
+            ),
+        },
+        { label: 'Status', value: <StatusBadge status={info.state} /> },
+        info.rentExemptReserve && {
+            label: 'Rent-exempt reserve (SOL)',
+            value: (
+                <span className="font-mono">◎{new BigNumber(info.rentExemptReserve.uiAmountString).toFormat(9)}</span>
+            ),
+        },
+        info.delegate && {
+            label: 'Delegate',
+            value: <Address pubkey={info.delegate} link />,
+        },
+        info.delegate && {
+            label: <>Delegated amount {typeof symbol === 'string' && `(${symbol})`}</>,
+            value: info.isNative ? (
+                <>
+                    {'\u25ce'}
+                    <span className="font-mono">
+                        {new BigNumber(info.delegatedAmount ? info.delegatedAmount.uiAmountString : '0').toFormat(9)}
+                    </span>
+                </>
+            ) : (
+                <>{info.delegatedAmount ? info.delegatedAmount.uiAmountString : '0'}</>
+            ),
+        },
+    ];
+
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">
-                    Token{account.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58() && '-2022'} Account
-                </h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                {label && (
-                    <tr>
-                        <td>Address Label</td>
-                        <td className="text-lg-end">{label}</td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Mint</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={info.mint} alignRight link tokenLabelInfo={tokenInfo} />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Owner</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={info.owner} alignRight link />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Token balance {typeof symbol === 'string' && `(${symbol})`}</td>
-                    <td className="text-lg-end">
-                        {balance}
-                        <ScaledUiAmountMultiplierTooltip
-                            rawAmount={normalizeTokenAmount(
-                                Number(info.tokenAmount.amount),
-                                info.tokenAmount.decimals || 0
-                            ).toString()}
-                            scaledUiAmountMultiplier={scaledUiAmountMultiplier}
-                        />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Status</td>
-                    <td className="text-lg-end">
-                        <StatusBadge status={info.state} />
-                    </td>
-                </tr>
-                {info.rentExemptReserve && (
-                    <tr>
-                        <td>Rent-exempt reserve (SOL)</td>
-                        <td className="text-lg-end">
-                            <>
-                                ◎
-                                <span className="font-monospace">
-                                    {new BigNumber(info.rentExemptReserve.uiAmountString).toFormat(9)}
-                                </span>
-                            </>
-                        </td>
-                    </tr>
-                )}
-                {info.delegate && (
-                    <>
-                        <tr>
-                            <td>Delegate</td>
-                            <td className="text-lg-end">
-                                <Address pubkey={info.delegate} alignRight link />
-                            </td>
-                        </tr>
-                        <tr>
-                            <td>Delegated amount {typeof symbol === 'string' && `(${symbol})`}</td>
-                            <td className="text-lg-end">
-                                {info.isNative ? (
-                                    <>
-                                        {'\u25ce'}
-                                        <span className="font-monospace">
-                                            {new BigNumber(
-                                                info.delegatedAmount ? info.delegatedAmount.uiAmountString : '0'
-                                            ).toFormat(9)}
-                                        </span>
-                                    </>
-                                ) : (
-                                    <>{info.delegatedAmount ? info.delegatedAmount.uiAmountString : '0'}</>
-                                )}
-                            </td>
-                        </tr>
-                    </>
-                )}
-                {accountExtensions && (
-                    <TokenExtensionsStatusRow address={account.pubkey.toBase58()} extensions={accountExtensions} />
-                )}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title={<>Token{account.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58() && '-2022'} Account</>}
+            account={account}
+            analyticsSection="token_account_card"
+            refresh={() => refresh(account.pubkey, 'parsed')}
+        >
+            <KeyValueRows rows={rows} />
+            {accountExtensions && (
+                <TokenExtensionsStatusRow address={account.pubkey.toBase58()} extensions={accountExtensions} />
+            )}
+        </AccountCard>
     );
 }
 
 function MultisigAccountCard({ account, info }: { account: Account; info: MultisigAccountInfo }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
+
+    const headerRows: KeyValueRow[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        { label: 'Required Signers', value: info.numRequiredSigners },
+        { label: 'Valid Signers', value: info.numValidSigners },
+    ];
 
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Multisig Account</h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top ms-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Required Signers</td>
-                    <td className="text-lg-end">{info.numRequiredSigners}</td>
-                </tr>
-                <tr>
-                    <td>Valid Signers</td>
-                    <td className="text-lg-end">{info.numValidSigners}</td>
-                </tr>
-                {info.signers.map(signer => (
-                    <tr key={signer.toString()}>
-                        <td>Signer</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={signer} alignRight link />
-                        </td>
-                    </tr>
-                ))}
-                {!info.isInitialized && (
-                    <tr>
-                        <td>Status</td>
-                        <td className="text-lg-end">Uninitialized</td>
-                    </tr>
-                )}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title="Multisig Account"
+            account={account}
+            analyticsSection="multisig_account_card"
+            refresh={() => refresh(account.pubkey, 'parsed')}
+        >
+            <KeyValueRows rows={headerRows} />
+            {info.signers.map(signer => (
+                <KeyValue key={signer.toString()} label="Signer">
+                    <Address pubkey={signer} link />
+                </KeyValue>
+            ))}
+            {!info.isInitialized && <KeyValue label="Status">Uninitialized</KeyValue>}
+        </AccountCard>
     );
 }
 
@@ -546,6 +437,7 @@ function cmpExtension(a: TokenExtension, b: TokenExtension) {
         'cpiGuard',
         'pausableAccount',
         'permanentDelegate',
+        'permissionedBurnConfig',
         'transferHook',
         'transferHookAccount',
         'metadataPointer',
@@ -571,12 +463,12 @@ function cmpExtension(a: TokenExtension, b: TokenExtension) {
 
 function HHeader({ name }: { name: string }) {
     return (
-        <tr>
+        <BaseTable.Row>
             {/*use important here as there is rule from .table-sm that affects all the underline elements*/}
-            <th colSpan={2} className="e-mb-2 !e-p-4 e-text-[15px] e-font-normal">
+            <BaseTable.HeaderCell colSpan={2} className="mb-2 !p-4 text-[15px] font-normal">
                 {name}
-            </th>
-        </tr>
+            </BaseTable.HeaderCell>
+        </BaseTable.Row>
     );
 }
 
@@ -589,7 +481,7 @@ export function TokenExtensionRow(
     maybeEpoch: bigint | undefined,
     decimals: number,
     symbol: string | undefined,
-    headerStyle: 'header' | 'omit' = 'header'
+    headerStyle: 'header' | 'omit' = 'header',
 ) {
     const epoch = maybeEpoch || 0n; // fallback to 0 if not provided
     switch (tokenExtension.extension) {
@@ -597,12 +489,12 @@ export function TokenExtensionRow(
             const extension = create(tokenExtension.state, MintCloseAuthority);
             if (extension.closeAuthority) {
                 return (
-                    <tr>
-                        <td>Close Authority</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Close Authority</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.closeAuthority} alignRight link />
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 );
             } else {
                 return <></>;
@@ -611,14 +503,14 @@ export function TokenExtensionRow(
         case 'transferFeeAmount': {
             const extension = create(tokenExtension.state, TransferFeeAmount);
             return (
-                <tr>
-                    <td>Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</td>
-                    <td className="text-lg-end">
+                <BaseTable.Row>
+                    <BaseTable.Cell>Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">
                         {normalizeTokenAmount(extension.withheldAmount, decimals).toLocaleString('en-US', {
                             maximumFractionDigits: 20,
                         })}
-                    </td>
-                </tr>
+                    </BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'transferFeeConfig': {
@@ -627,73 +519,81 @@ export function TokenExtensionRow(
                 <>
                     {headerStyle === 'header' ? <HHeader name="Transfer Fee Config" /> : null}
                     {extension.transferFeeConfigAuthority && (
-                        <tr>
-                            <td>Transfer Fee Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Transfer Fee Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.transferFeeConfigAuthority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>{extension.newerTransferFee.epoch > epoch ? 'Current' : 'Previous'} Fee Epoch</td>
-                        <td className="text-lg-end">{extension.olderTransferFee.epoch}</td>
-                    </tr>
-                    <tr>
-                        <td>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
+                            {extension.newerTransferFee.epoch > epoch ? 'Current' : 'Previous'} Fee Epoch
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.olderTransferFee.epoch}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
                             {extension.newerTransferFee.epoch > epoch ? 'Current' : 'Previous'} Maximum Fee{' '}
                             {typeof symbol === 'string' && `(${symbol})`}
-                        </td>
-                        <td className="text-lg-end">
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             {normalizeTokenAmount(extension.olderTransferFee.maximumFee, decimals).toLocaleString(
                                 'en-US',
                                 {
                                     maximumFractionDigits: 20,
-                                }
+                                },
                             )}
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>{extension.newerTransferFee.epoch > epoch ? 'Current' : 'Previous'} Fee Rate</td>
-                        <td className="text-lg-end">{`${extension.olderTransferFee.transferFeeBasisPoints / 100}%`}</td>
-                    </tr>
-                    <tr>
-                        <td>{extension.newerTransferFee.epoch > epoch ? 'Future' : 'Current'} Fee Epoch</td>
-                        <td className="text-lg-end">{extension.newerTransferFee.epoch}</td>
-                    </tr>
-                    <tr>
-                        <td>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
+                            {extension.newerTransferFee.epoch > epoch ? 'Current' : 'Previous'} Fee Rate
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{`${extension.olderTransferFee.transferFeeBasisPoints / 100}%`}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
+                            {extension.newerTransferFee.epoch > epoch ? 'Future' : 'Current'} Fee Epoch
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.newerTransferFee.epoch}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
                             {extension.newerTransferFee.epoch > epoch ? 'Future' : 'Current'} Maximum Fee{' '}
                             {typeof symbol === 'string' && `(${symbol})`}
-                        </td>
-                        <td className="text-lg-end">
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             {normalizeTokenAmount(extension.newerTransferFee.maximumFee, decimals).toLocaleString(
                                 'en-US',
                                 {
                                     maximumFractionDigits: 20,
-                                }
+                                },
                             )}
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>{extension.newerTransferFee.epoch > epoch ? 'Future' : 'Current'} Fee Rate</td>
-                        <td className="text-lg-end">{`${extension.newerTransferFee.transferFeeBasisPoints / 100}%`}</td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
+                            {extension.newerTransferFee.epoch > epoch ? 'Future' : 'Current'} Fee Rate
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{`${extension.newerTransferFee.transferFeeBasisPoints / 100}%`}</BaseTable.Cell>
+                    </BaseTable.Row>
                     {extension.withdrawWithheldAuthority && (
-                        <tr>
-                            <td>Withdraw Withheld Fees Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Withdraw Withheld Fees Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.withdrawWithheldAuthority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             {normalizeTokenAmount(extension.withheldAmount, decimals).toLocaleString('en-US', {
                                 maximumFractionDigits: 20,
                             })}
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
@@ -701,25 +601,27 @@ export function TokenExtensionRow(
             const extension = create(tokenExtension.state, ConfidentialTransferMint);
             return (
                 <>
-                    {headerStyle === 'header' ? <HHeader name="Confidential Transfer" /> : null}
+                    {headerStyle === 'header' ? <HHeader name="Confidential Transfer Mint" /> : null}
                     {extension.authority && (
-                        <tr>
-                            <td>Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.auditorElgamalPubkey && (
-                        <tr>
-                            <td>Auditor Elgamal Pubkey</td>
-                            <td className="text-lg-end">{extension.auditorElgamalPubkey}</td>
-                        </tr>
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Auditor Elgamal Pubkey</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">{extension.auditorElgamalPubkey}</BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>New Account Approval Policy</td>
-                        <td className="text-lg-end">{extension.autoApproveNewAccounts ? 'auto' : 'manual'}</td>
-                    </tr>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>New Account Approval Policy</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.autoApproveNewAccounts ? 'auto' : 'manual'}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
@@ -729,45 +631,51 @@ export function TokenExtensionRow(
                 <>
                     {headerStyle === 'header' ? <HHeader name="Confidential Transfer Fee" /> : null}
                     {extension.authority && (
-                        <tr>
-                            <td>Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.withdrawWithheldAuthorityElgamalPubkey && (
-                        <tr>
-                            <td>Auditor Elgamal Pubkey</td>
-                            <td className="text-lg-end">{extension.withdrawWithheldAuthorityElgamalPubkey}</td>
-                        </tr>
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Auditor Elgamal Pubkey</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
+                                {extension.withdrawWithheldAuthorityElgamalPubkey}
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Harvest to Mint</td>
-                        <td className="text-lg-end">{extension.harvestToMintEnabled ? 'enabled' : 'disabled'}</td>
-                    </tr>
-                    <tr>
-                        <td>Encrypted Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</td>
-                        <td className="text-lg-end">{extension.withheldAmount}</td>
-                    </tr>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Harvest to Mint</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.harvestToMintEnabled ? 'enabled' : 'disabled'}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>
+                            Encrypted Withheld Amount {typeof symbol === 'string' && `(${symbol})`}
+                        </BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.withheldAmount}</BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
         case 'defaultAccountState': {
             const extension = create(tokenExtension.state, DefaultAccountState);
             return (
-                <tr>
-                    <td>DefaultAccountState</td>
-                    <td className="text-lg-end">{extension.accountState}</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>DefaultAccountState</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">{extension.accountState}</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'nonTransferable': {
             return (
-                <tr>
-                    <td>Non-Transferable</td>
-                    <td className="text-lg-end">enabled</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Non-Transferable</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">enabled</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'interestBearingConfig': {
@@ -776,29 +684,33 @@ export function TokenExtensionRow(
                 <>
                     {headerStyle === 'header' ? <HHeader name="Interest-Bearing" /> : null}
                     {extension.rateAuthority && (
-                        <tr>
-                            <td>Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.rateAuthority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Current Rate</td>
-                        <td className="text-lg-end">{`${extension.currentRate / 100}%`}</td>
-                    </tr>
-                    <tr>
-                        <td>Pre-Current Average Rate</td>
-                        <td className="text-lg-end">{`${extension.preUpdateAverageRate / 100}%`}</td>
-                    </tr>
-                    <tr>
-                        <td>Last Update Timestamp</td>
-                        <td className="text-lg-end">{displayTimestamp(extension.lastUpdateTimestamp * 1000)}</td>
-                    </tr>
-                    <tr>
-                        <td>Initialization Timestamp</td>
-                        <td className="text-lg-end">{displayTimestamp(extension.initializationTimestamp * 1000)}</td>
-                    </tr>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Current Rate</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{`${extension.currentRate / 100}%`}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Pre-Current Average Rate</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{`${extension.preUpdateAverageRate / 100}%`}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Last Update Timestamp</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {displayTimestamp(extension.lastUpdateTimestamp * 1000)}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Initialization Timestamp</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {displayTimestamp(extension.initializationTimestamp * 1000)}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
@@ -806,72 +718,89 @@ export function TokenExtensionRow(
             const extension = create(tokenExtension.state, ScaledUiAmountConfig);
             return (
                 <>
-                    {headerStyle === 'header' ? <HHeader name="Scaled UI Amount" /> : null}
+                    {headerStyle === 'header' ? <HHeader name="Scaled UI Amount Config" /> : null}
                     {extension.authority && (
-                        <tr>
-                            <td>Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Multiplier</td>
-                        <td className="text-lg-end">{extension.multiplier}</td>
-                    </tr>
-                    <tr>
-                        <td>New Multiplier</td>
-                        <td className="text-lg-end">{extension.newMultiplier}</td>
-                    </tr>
-                    <tr>
-                        <td>New Multiplier Effective Timestamp</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Multiplier</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.multiplier}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>New Multiplier</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.newMultiplier}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>New Multiplier Effective Timestamp</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             {displayTimestamp(extension.newMultiplierEffectiveTimestamp * 1000)}
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
         case 'pausableAccount': {
             return (
-                <tr>
-                    <td>Pausable Account</td>
-                    <td className="text-lg-end">enabled</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Pausable Account</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">enabled</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'pausableConfig': {
             const extension = create(tokenExtension.state, PausableConfig);
             return (
                 <>
-                    {headerStyle === 'header' ? <HHeader name="Pausable" /> : null}
+                    {headerStyle === 'header' ? <HHeader name="Pausable Config" /> : null}
                     <>
                         {extension.authority && (
-                            <tr>
-                                <td>Authority</td>
-                                <td className="text-lg-end">
+                            <BaseTable.Row>
+                                <BaseTable.Cell>Authority</BaseTable.Cell>
+                                <BaseTable.Cell className="md:text-right">
                                     <Address pubkey={extension.authority} alignRight link />
-                                </td>
-                            </tr>
+                                </BaseTable.Cell>
+                            </BaseTable.Row>
                         )}
-                        <tr>
-                            <td>Paused</td>
-                            <td className="text-lg-end">{extension.paused ? 'paused' : 'not paused'}</td>
-                        </tr>
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Paused</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
+                                {extension.paused ? 'paused' : 'not paused'}
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     </>
                 </>
             );
+        }
+        case 'permissionedBurnConfig': {
+            const extension = create(tokenExtension.state, PermissionedBurnConfig);
+            if (extension.authority) {
+                return (
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Permissioned Burn Authority</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            <Address pubkey={extension.authority} alignRight link />
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                );
+            } else {
+                return <></>;
+            }
         }
         case 'permanentDelegate': {
             const extension = create(tokenExtension.state, PermanentDelegate);
             if (extension.delegate) {
                 return (
-                    <tr>
-                        <td>Permanent Delegate</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Permanent Delegate</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.delegate} alignRight link />
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 );
             } else {
                 return <></>;
@@ -882,20 +811,20 @@ export function TokenExtensionRow(
             return (
                 <>
                     {extension.programId && (
-                        <tr>
-                            <td>Transfer Hook Program Id</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Transfer Hook Program Id</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.programId} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.authority && (
-                        <tr>
-                            <td>Transfer Hook Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Transfer Hook Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                 </>
             );
@@ -905,20 +834,20 @@ export function TokenExtensionRow(
             return (
                 <>
                     {extension.metadataAddress && (
-                        <tr>
-                            <td>Metadata</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Metadata</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.metadataAddress} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.authority && (
-                        <tr>
-                            <td>Metadata Pointer Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Metadata Pointer Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                 </>
             );
@@ -928,20 +857,20 @@ export function TokenExtensionRow(
             return (
                 <>
                     {extension.groupAddress && (
-                        <tr>
-                            <td>Token Group</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Token Group</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.groupAddress} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.authority && (
-                        <tr>
-                            <td>Group Pointer Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Group Pointer Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                 </>
             );
@@ -951,20 +880,20 @@ export function TokenExtensionRow(
             return (
                 <>
                     {extension.memberAddress && (
-                        <tr>
-                            <td>Token Group Member</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Token Group Member</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.memberAddress} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                     {extension.authority && (
-                        <tr>
-                            <td>Member Pointer Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Member Pointer Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.authority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
                 </>
             );
@@ -974,54 +903,54 @@ export function TokenExtensionRow(
             return (
                 <>
                     {headerStyle === 'header' ? <HHeader name="Metadata" /> : null}
-                    <tr>
-                        <td>Mint</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Mint</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.mint} alignRight link />
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                     {extension.updateAuthority && (
-                        <tr>
-                            <td>Update Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Update Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.updateAuthority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Name</td>
-                        <td className="text-lg-end">{extension.name}</td>
-                    </tr>
-                    <tr>
-                        <td>Symbol</td>
-                        <td className="text-lg-end">{extension.symbol}</td>
-                    </tr>
-                    <tr>
-                        <td>URI</td>
-                        <td className="text-lg-end">
-                            {extension.uri.startsWith('http') ? (
-                                <a rel="noopener noreferrer" target="_blank" href={extension.uri}>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Name</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.name}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Symbol</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.symbol}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>URI</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {getSafeExternalHref(extension.uri) ? (
+                                <ExternalLink href={extension.uri}>
                                     {extension.uri}
-                                    <ExternalLink className="align-text-top ms-2" size={13} />
-                                </a>
+                                    <ExternalLinkIcon className="ml-1.5 align-text-top" size={13} />
+                                </ExternalLink>
                             ) : (
                                 extension.uri
                             )}
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                     {extension.additionalMetadata?.length > 0 && (
                         <>
-                            <tr>
+                            <BaseTable.Row>
                                 {/*use important here as there is rule from .table-sm that affects all the underline elements*/}
-                                <th colSpan={2} className="e-mb-2 e-h-5 !e-pl-6 e-font-normal e-italic">
+                                <BaseTable.HeaderCell colSpan={2} className="mb-2 h-5 !pl-6 font-normal italic">
                                     Additional Metadata
-                                </th>
-                            </tr>
+                                </BaseTable.HeaderCell>
+                            </BaseTable.Row>
                             {extension.additionalMetadata?.map(keyValuePair => (
-                                <tr key="{keyValuePair[0]}">
-                                    <td>{keyValuePair[0]}</td>
-                                    <td className="text-lg-end">{keyValuePair[1]}</td>
-                                </tr>
+                                <BaseTable.Row key="{keyValuePair[0]}">
+                                    <BaseTable.Cell>{keyValuePair[0]}</BaseTable.Cell>
+                                    <BaseTable.Cell className="md:text-right">{keyValuePair[1]}</BaseTable.Cell>
+                                </BaseTable.Row>
                             ))}
                         </>
                     )}
@@ -1031,111 +960,133 @@ export function TokenExtensionRow(
         case 'cpiGuard': {
             const extension = create(tokenExtension.state, CpiGuard);
             return (
-                <tr>
-                    <td>CPI Guard</td>
-                    <td className="text-lg-end">{extension.lockCpi ? 'enabled' : 'disabled'}</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>CPI Guard</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">
+                        {extension.lockCpi ? 'enabled' : 'disabled'}
+                    </BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'confidentialTransferAccount': {
             const extension = create(tokenExtension.state, ConfidentialTransferAccount);
             return (
                 <>
-                    {headerStyle === 'header' ? <HHeader name="Confidential Transfer" /> : null}
-                    <tr>
-                        <td>Status</td>
-                        <td className="text-lg-end">{!extension.approved && 'not '}approved</td>
-                    </tr>
-                    <tr>
-                        <td>Elgamal Pubkey</td>
-                        <td className="text-lg-end">{extension.elgamalPubkey}</td>
-                    </tr>
-                    <tr>
-                        <td>Confidential Credits</td>
-                        <td className="text-lg-end">{extension.allowConfidentialCredits ? 'enabled' : 'disabled'}</td>
-                    </tr>
-                    <tr>
-                        <td>Non-confidential Credits</td>
-                        <td className="text-lg-end">
+                    {headerStyle === 'header' ? <HHeader name="Confidential Transfer Account" /> : null}
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Status</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {!extension.approved && 'not '}approved
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Elgamal Pubkey</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.elgamalPubkey}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Confidential Credits</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.allowConfidentialCredits ? 'enabled' : 'disabled'}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Non-confidential Credits</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             {extension.allowNonConfidentialCredits ? 'enabled' : 'disabled'}
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Available Balance</td>
-                        <td className="text-lg-end">{extension.availableBalance}</td>
-                    </tr>
-                    <tr>
-                        <td>Decryptable Available Balance</td>
-                        <td className="text-lg-end">{extension.decryptableAvailableBalance}</td>
-                    </tr>
-                    <tr>
-                        <td>Pending Balance, Low Bits</td>
-                        <td className="text-lg-end">{extension.pendingBalanceLo}</td>
-                    </tr>
-                    <tr>
-                        <td>Pending Balance, High Bits</td>
-                        <td className="text-lg-end">{extension.pendingBalanceHi}</td>
-                    </tr>
-                    <tr>
-                        <td>Pending Balance Credit Counter</td>
-                        <td className="text-lg-end">{extension.pendingBalanceCreditCounter}</td>
-                    </tr>
-                    <tr>
-                        <td>Expected Pending Balance Credit Counter</td>
-                        <td className="text-lg-end">{extension.expectedPendingBalanceCreditCounter}</td>
-                    </tr>
-                    <tr>
-                        <td>Actual Pending Balance Credit Counter</td>
-                        <td className="text-lg-end">{extension.actualPendingBalanceCreditCounter}</td>
-                    </tr>
-                    <tr>
-                        <td>Maximum Pending Balance Credit Counter</td>
-                        <td className="text-lg-end">{extension.maximumPendingBalanceCreditCounter}</td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Available Balance</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.availableBalance}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Decryptable Available Balance</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.decryptableAvailableBalance}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Pending Balance, Low Bits</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.pendingBalanceLo}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Pending Balance, High Bits</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.pendingBalanceHi}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Pending Balance Credit Counter</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.pendingBalanceCreditCounter}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Expected Pending Balance Credit Counter</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.expectedPendingBalanceCreditCounter}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Actual Pending Balance Credit Counter</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.actualPendingBalanceCreditCounter}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Maximum Pending Balance Credit Counter</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
+                            {extension.maximumPendingBalanceCreditCounter}
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
         case 'immutableOwner': {
             return (
-                <tr>
-                    <td>Immutable Owner</td>
-                    <td className="text-lg-end">enabled</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Immutable Owner</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">enabled</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'memoTransfer': {
             const extension = create(tokenExtension.state, MemoTransfer);
             return (
-                <tr>
-                    <td>Require Memo on Incoming Transfers</td>
-                    <td className="text-lg-end">{extension.requireIncomingTransferMemos ? 'enabled' : 'disabled'}</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Require Memo on Incoming Transfers</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">
+                        {extension.requireIncomingTransferMemos ? 'enabled' : 'disabled'}
+                    </BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'transferHookAccount': {
             const extension = create(tokenExtension.state, TransferHookAccount);
             return (
-                <tr>
-                    <td>Transfer Hook Status</td>
-                    <td className="text-lg-end">{!extension.transferring && 'not '}transferring</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Transfer Hook Status</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">
+                        {!extension.transferring && 'not '}transferring
+                    </BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'nonTransferableAccount': {
             return (
-                <tr>
-                    <td>Non-Transferable</td>
-                    <td className="text-lg-end">enabled</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Non-Transferable</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">enabled</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'confidentialTransferFeeAmount': {
             const extension = create(tokenExtension.state, ConfidentialTransferFeeAmount);
             return (
-                <tr>
-                    <td>Encrypted Withheld Amount {typeof symbol === 'string' && `(${symbol})`}</td>
-                    <td className="text-lg-end">{extension.withheldAmount}</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>
+                        Encrypted Withheld Amount {typeof symbol === 'string' && `(${symbol})`}
+                    </BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">{extension.withheldAmount}</BaseTable.Cell>
+                </BaseTable.Row>
             );
         }
         case 'tokenGroup': {
@@ -1143,28 +1094,28 @@ export function TokenExtensionRow(
             return (
                 <>
                     {headerStyle === 'header' ? <HHeader name="Group" /> : null}
-                    <tr>
-                        <td>Mint</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Mint</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.mint} alignRight link />
-                        </td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
                     {extension.updateAuthority && (
-                        <tr>
-                            <td>Update Authority</td>
-                            <td className="text-lg-end">
+                        <BaseTable.Row>
+                            <BaseTable.Cell>Update Authority</BaseTable.Cell>
+                            <BaseTable.Cell className="md:text-right">
                                 <Address pubkey={extension.updateAuthority} alignRight link />
-                            </td>
-                        </tr>
+                            </BaseTable.Cell>
+                        </BaseTable.Row>
                     )}
-                    <tr>
-                        <td>Current Size</td>
-                        <td className="text-lg-end">{extension.size}</td>
-                    </tr>
-                    <tr>
-                        <td>Max Size</td>
-                        <td className="text-lg-end">{extension.maxSize}</td>
-                    </tr>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Current Size</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.size}</BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Max Size</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.maxSize}</BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
@@ -1173,32 +1124,32 @@ export function TokenExtensionRow(
             return (
                 <>
                     {headerStyle === 'header' ? <HHeader name="Group Member" /> : null}
-                    <tr>
-                        <td>Mint</td>
-                        <td className="text-lg-end">
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Mint</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.mint} alignRight link />
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Group</td>
-                        <td className="text-lg-end">
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Group</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">
                             <Address pubkey={extension.group} alignRight link />
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Member Number</td>
-                        <td className="text-lg-end">{extension.memberNumber}</td>
-                    </tr>
+                        </BaseTable.Cell>
+                    </BaseTable.Row>
+                    <BaseTable.Row>
+                        <BaseTable.Cell>Member Number</BaseTable.Cell>
+                        <BaseTable.Cell className="md:text-right">{extension.memberNumber}</BaseTable.Cell>
+                    </BaseTable.Row>
                 </>
             );
         }
         case 'unparseableExtension':
         default:
             return (
-                <tr>
-                    <td>Unknown Extension</td>
-                    <td className="text-lg-end">unparseable</td>
-                </tr>
+                <BaseTable.Row>
+                    <BaseTable.Cell>Unknown Extension</BaseTable.Cell>
+                    <BaseTable.Cell className="md:text-right">unparseable</BaseTable.Cell>
+                </BaseTable.Row>
             );
     }
 }

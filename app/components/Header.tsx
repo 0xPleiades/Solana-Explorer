@@ -1,25 +1,49 @@
 import { AccountHeader } from '@components/account/AccountHeader';
-import { TokenMarketData } from '@components/common/TokenMarketData';
-import { ComponentProps } from 'react';
+import { isTokenProgramData } from '@providers/accounts';
+import { type ComponentProps, useMemo } from 'react';
 
-import { useCoinGecko } from '@/app/utils/coingecko';
+import { TokenMarketData, useTokenMarketData } from '@/app/features/token-market-data';
+import { TokenVerificationBadge, type VerificationTarget } from '@/app/features/token-verification-badge';
+import { toKitAddress } from '@/app/shared/lib/web3js-compat';
+import { isNativeMint, isTokenMintByOwner } from '@/app/shared/model/token-program';
 
 type HeaderProps = ComponentProps<typeof AccountHeader>;
 
 export function Header({ address, account, tokenInfo, isTokenInfoLoading }: HeaderProps) {
-    const coinInfo = useCoinGecko(tokenInfo?.extensions?.coingeckoId);
+    const parsedData = account?.data.parsed;
+    // isTokenProgramData + parsed.type check gonna be replaced with isTokenMintByOwner(owner, data) at some point
+    const isTokenMint =
+        !isNativeMint(address) &&
+        parsedData &&
+        isTokenProgramData(parsedData) &&
+        parsedData?.parsed.type === 'mint' &&
+        isTokenMintByOwner(toKitAddress(account.owner), account.data.raw);
+
+    const marketData = useTokenMarketData(address, !!isTokenMint);
+
+    const verificationTarget: VerificationTarget = useMemo(
+        () => ({
+            address,
+            isTokenMint: !!isTokenMint,
+            solflareVerified: tokenInfo && 'verified' in tokenInfo ? tokenInfo.verified : undefined,
+        }),
+        [address, isTokenMint, tokenInfo],
+    );
 
     return (
-        <div className="header">
-            <div className="header-body e-flex e-flex-col e-gap-4 md:e-flex-row md:e-items-end  md:e-justify-between md:e-gap-1">
-                <AccountHeader
-                    address={address}
-                    account={account}
-                    tokenInfo={tokenInfo}
-                    isTokenInfoLoading={isTokenInfoLoading}
-                />
-                <TokenMarketData tokenInfo={tokenInfo} coinInfo={coinInfo} />
-            </div>
-        </div>
+        <header className="mb-3 flex flex-col items-start gap-4 py-6 lg:flex-row lg:items-end lg:justify-between lg:gap-1">
+            <AccountHeader
+                address={address}
+                account={account}
+                tokenInfo={tokenInfo}
+                isTokenInfoLoading={isTokenInfoLoading}
+            />
+            {isTokenMint && (
+                <div className="flex w-full flex-col gap-1 sm:items-start sm:gap-2 md:w-auto md:flex-row">
+                    <TokenVerificationBadge target={verificationTarget} isTokenInfoLoading={isTokenInfoLoading} />
+                    <TokenMarketData marketData={marketData} />
+                </div>
+            )}
+        </header>
     );
 }

@@ -1,0 +1,22 @@
+import { Infer, nullable, optional, string, type } from 'superstruct';
+
+export const DigitalAssetSchema = type({
+    content: nullable(
+        type({
+            links: nullable(
+                optional(
+                    type({
+                        image: nullable(optional(string())),
+                    }),
+                ),
+            ),
+        }),
+    ),
+    id: string(),
+});
+
+export const GetAssetResponseSchema = type({
+    result: nullable(DigitalAssetSchema),
+});
+
+export type DigitalAsset = Infer<typeof DigitalAssetSchema>;

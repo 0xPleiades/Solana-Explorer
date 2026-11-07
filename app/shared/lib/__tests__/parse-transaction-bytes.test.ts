@@ -1,0 +1,273 @@
+import {
+    bytesEqual,
+    getBase58Encoder,
+    getCompiledTransactionMessageDecoder,
+    getCompiledTransactionMessageEncoder,
+    getTransactionDecoder,
+} from '@solana/kit';
+import { PublicKey, SystemProgram, TransactionMessage, VersionedMessage, VersionedTransaction } from '@solana/web3.js';
+import { describe, expect, it } from 'vitest';
+
+import {
+    createWeb3TransactionMessage,
+    FEE_PAYER,
+    RECIPIENT,
+} from '@/app/entities/transaction-data/__fixtures__/wire-transactions';
+
+import { parseTransactionBytes } from '../parse-transaction-bytes';
+
+const BASE58_ENCODER = getBase58Encoder();
+
+describe('parseTransactionBytes', () => {
+    it.each([
+        ['legacy', createLegacyMessageBytes],
+        ['v0', createV0MessageBytes],
+    ])('should treat raw %s message bytes as message-only (no signatures)', (_label, create) => {
+        const messageBytes = create();
+        const result = parseTransactionBytes(messageBytes);
+
+        expect(result.signatures).toBeUndefined();
+        expect(VersionedMessage.deserialize(result.messageBytes).header.numRequiredSignatures).toBe(1);
+    });
+
+    it.each([
+        ['legacy', createLegacyMessageBytes],
+        ['v0', createV0MessageBytes],
+    ])('should extract signatures and valid message from a %s transaction', (_label, create) => {
+        const messageBytes = create();
+        const txBytes = buildTransactionBytes(messageBytes, 1);
+
+        const result = parseTransactionBytes(txBytes);
+
+        expect(result.signatures).toHaveLength(1);
+        if (!result.signatures?.[0]) {
+            throw new Error('Expected at least one signature');
+        }
+        // 64-byte ed25519 signature roundtrips through base58
+        expect(BASE58_ENCODER.encode(result.signatures[0])).toHaveLength(64);
+        expect(VersionedMessage.deserialize(result.messageBytes).header.numRequiredSignatures).toBe(1);
+    });
+
+    it('should handle transactions with multiple signatures', () => {
+        const messageBytes = createMultiSigMessageBytes();
+        const numRequired = VersionedMessage.deserialize(messageBytes).header.numRequiredSignatures;
+        const txBytes = buildTransactionBytes(messageBytes, numRequired);
+
+        const result = parseTransactionBytes(txBytes);
+
+        expect(result.signatures).toHaveLength(numRequired);
+        expect(VersionedMessage.deserialize(result.messageBytes).header.numRequiredSignatures).toBe(numRequired);
+    });
+
+    it('should preserve unsigned slots as undefined in the signatures array', () => {
+        const messageBytes = createMultiSigMessageBytes();
+        const numRequired = VersionedMessage.deserialize(messageBytes).header.numRequiredSignatures;
+        expect(numRequired).toBe(2); // precondition
+
+        // Build a transaction where only the first signer has a real signature;
+        // the second slot is all zeros (unsigned).
+        const realSig = crypto.getRandomValues(new Uint8Array(64));
+        const zeroSig = new Uint8Array(64); // all zeros
+        const tx = new Uint8Array(1 + numRequired * 64 + messageBytes.length);
+        tx[0] = numRequired;
+        tx.set(realSig, 1);
+        tx.set(zeroSig, 1 + 64);
+        tx.set(messageBytes, 1 + numRequired * 64);
+
+        const result = parseTransactionBytes(tx);
+
+        // Array length must match numRequiredSignatures to keep positional alignment
+        expect(result.signatures).toHaveLength(numRequired);
+        expect(result.signatures?.[0]).toBeDefined();
+        expect(result.signatures?.[1]).toBeUndefined();
+    });
+
+    it('should produce base58 signatures that roundtrip to the original bytes', () => {
+        const messageBytes = createLegacyMessageBytes();
+        const knownSigBytes = new Uint8Array(64).fill(42);
+        const tx = new Uint8Array(1 + 64 + messageBytes.length);
+        tx[0] = 1;
+        tx.set(knownSigBytes, 1);
+        tx.set(messageBytes, 65);
+
+        const result = parseTransactionBytes(tx);
+
+        const firstSig = result.signatures?.[0];
+        if (!firstSig) throw new Error('Expected first signature to be defined');
+        expect(new Uint8Array(BASE58_ENCODER.encode(firstSig))).toEqual(knownSigBytes);
+    });
+
+    it('should fall back when bytes after signatures fail to deserialize', () => {
+        const garbage = new Uint8Array(69);
+        garbage[0] = 1; // claims 1 signature
+        // requiredSignaturesByteOffset = 1 + 1*64 = 65
+        garbage[65] = 1; // make numRequiredSignatures match so we enter the sig-parsing path
+
+        const result = parseTransactionBytes(garbage);
+
+        expect(result.signatures).toBeUndefined();
+        expect(result.messageBytes).toBe(garbage);
+    });
+
+    it('should fall back when bytes deserialize as a transaction but do not round-trip', () => {
+        // Hand-crafted bare legacy message (136 bytes) that VersionedTransaction.deserialize
+        // happily accepts by misreading the first 65 bytes as "1 signature". Without the
+        // round-trip check, we'd return a 69-byte fake message recovered from the second
+        // half of the input — losing the real account keys, blockhash, and instruction.
+        const bytes = buildAmbiguousBareMessage();
+
+        // Precondition: @solana/kit's transaction decoder DOES accept these bytes — the
+        // same decoder used by parseTransactionBytes — so the round-trip branch is what
+        // the test actually exercises (not the decode-throws fallback).
+        const tx = getTransactionDecoder().decode(bytes);
+        // And re-encoding the message is lossy: the parse silently dropped trailing bytes.
+        const reEncoded = getCompiledTransactionMessageEncoder().encode(
+            getCompiledTransactionMessageDecoder().decode(tx.messageBytes),
+        );
+        expect(bytesEqual(reEncoded, tx.messageBytes)).toBe(false);
+
+        // parseTransactionBytes detects the mismatch and treats the input as a bare message.
+        const result = parseTransactionBytes(bytes);
+        expect(result.signatures).toBeUndefined();
+        expect(result.messageBytes).toBe(bytes);
+    });
+
+    it('should return a slice (not a view) of message bytes for transactions', () => {
+        const txBytes = buildTransactionBytes(createLegacyMessageBytes(), 1);
+        const result = parseTransactionBytes(txBytes);
+        const snapshot = new Uint8Array(result.messageBytes);
+
+        txBytes.fill(0);
+
+        expect(result.messageBytes).toEqual(snapshot);
+    });
+
+    it.each([
+        ['empty', new Uint8Array(0)],
+        ['single zero byte', new Uint8Array([0])],
+        ['single non-zero byte', new Uint8Array([1])],
+        ['single max byte', new Uint8Array([255])],
+        ['short buffer', new Uint8Array(10)],
+    ])('should not throw for %s input', (_label, bytes) => {
+        const result = parseTransactionBytes(bytes);
+
+        expect(result.messageBytes).toBe(bytes);
+        expect(result.signatures).toBeUndefined();
+    });
+
+    /**
+     * VersionedTransaction.deserialize performs the same cross-check
+     * (signature count must equal numRequiredSignatures), so the manual
+     * implementation could safely be replaced by it.
+     */
+
+    it('should reject when sig count mismatches — same as VersionedTransaction.deserialize', () => {
+        const innerMessage = createMultiSigMessageBytes();
+        const numRequired = VersionedMessage.deserialize(innerMessage).header.numRequiredSignatures;
+        expect(numRequired).toBe(2); // precondition: message needs 2 signers
+
+        const ambiguousBytes = new Uint8Array(1 + 64 + innerMessage.length);
+        ambiguousBytes[0] = 1; // claims 1 signature, but message needs 2
+        ambiguousBytes.set(crypto.getRandomValues(new Uint8Array(64)), 1);
+        ambiguousBytes.set(innerMessage, 65);
+
+        // VersionedTransaction.deserialize also rejects the mismatch
+        expect(() => VersionedTransaction.deserialize(ambiguousBytes)).toThrow(
+            'Expected signatures length to be equal to the number of required signatures',
+        );
+
+        // parseTransactionBytes falls back to bare message
+        const result = parseTransactionBytes(ambiguousBytes);
+        expect(result.signatures).toBeUndefined();
+        expect(result.messageBytes).toBe(ambiguousBytes);
+    });
+
+    it('should reject when sig count is zero but message requires signers — same as VersionedTransaction.deserialize', () => {
+        const innerMessage = createLegacyMessageBytes();
+        expect(VersionedMessage.deserialize(innerMessage).header.numRequiredSignatures).toBe(1);
+
+        const ambiguousBytes = new Uint8Array(1 + innerMessage.length);
+        ambiguousBytes[0] = 0; // claims 0 signatures, but message needs 1
+        ambiguousBytes.set(innerMessage, 1);
+
+        // VersionedTransaction.deserialize also rejects the mismatch
+        expect(() => VersionedTransaction.deserialize(ambiguousBytes)).toThrow(
+            'Expected signatures length to be equal to the number of required signatures',
+        );
+
+        // parseTransactionBytes falls back to bare message
+        const result = parseTransactionBytes(ambiguousBytes);
+        expect(result.signatures).toBeUndefined();
+        expect(result.messageBytes).toBe(ambiguousBytes);
+    });
+});
+
+function createLegacyMessageBytes(): Uint8Array {
+    return new Uint8Array(createWeb3TransactionMessage().compileToLegacyMessage().serialize());
+}
+
+function createV0MessageBytes(): Uint8Array {
+    return new Uint8Array(createWeb3TransactionMessage().compileToV0Message().serialize());
+}
+
+function createMultiSigMessageBytes(): Uint8Array {
+    const payerKey = new PublicKey(FEE_PAYER);
+    const buf = new TransactionMessage({
+        instructions: [
+            SystemProgram.createAccount({
+                fromPubkey: payerKey,
+                lamports: 1_000_000,
+                newAccountPubkey: new PublicKey(RECIPIENT),
+                programId: SystemProgram.programId,
+                space: 0,
+            }),
+        ],
+        payerKey,
+        recentBlockhash: PublicKey.default.toBase58(),
+    })
+        .compileToLegacyMessage()
+        .serialize();
+    return new Uint8Array(buf);
+}
+
+/**
+ * Bare legacy message whose bytes from offset 65 also parse as a (different)
+ * valid VersionedMessage with numRequiredSignatures=1. Random keys sometimes
+ * produce this shape: `VersionedTransaction.deserialize` succeeds and silently
+ * returns a fake message recovered from the back half of the input.
+ */
+function buildAmbiguousBareMessage(): Uint8Array {
+    const bytes = new Uint8Array(136);
+
+    // --- Bare-message view (the truth) ---
+    bytes[0] = 1; // header.numRequiredSignatures
+    bytes[1] = 0; // header.numReadonlySignedAccounts
+    bytes[2] = 1; // header.numReadonlyUnsignedAccounts
+    bytes[3] = 3; // 3 account keys
+    // pubkey1: 4..36, pubkey2: 36..68, pubkey3: 68..100, blockhash: 100..132
+    bytes[132] = 1; // 1 instruction
+    // empty instruction at 133..136: programIdIndex=0, accountLen=0, dataLen=0
+
+    // --- Tx misinterpretation: byte[0]=1 → "1 signature" → bytes[65..] is "message" ---
+    // Make the would-be message header valid with numRequiredSignatures=1 so
+    // VersionedTransaction.deserialize's internal sig-count check passes.
+    bytes[65] = 1; // fake numRequiredSignatures (also pubkey2[29])
+    bytes[66] = 0; // fake numReadonlySignedAccounts
+    bytes[67] = 1; // fake numReadonlyUnsignedAccounts
+    bytes[68] = 1; // fake account keys length (also pubkey3[0])
+    // The fake message consumes 69 bytes (header + 1 pubkey + blockhash + numInst=0).
+    // bytes[133]=0 already serves as the fake numInstructions.
+
+    return bytes;
+}
+
+function buildTransactionBytes(messageBytes: Uint8Array, signatureCount: number): Uint8Array {
+    const signatures = Array.from({ length: signatureCount }, () => crypto.getRandomValues(new Uint8Array(64)));
+    const tx = new Uint8Array(1 + signatureCount * 64 + messageBytes.length);
+    tx[0] = signatureCount;
+    for (let i = 0; i < signatureCount; i++) {
+        tx.set(signatures[i], 1 + i * 64);
+    }
+    tx.set(messageBytes, 1 + signatureCount * 64);
+    return tx;
+}

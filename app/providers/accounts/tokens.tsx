@@ -1,35 +1,36 @@
 'use client';
 
+import { getRpc } from '@entities/cluster';
 import { useAccountInfo, useFetchAccountInfo } from '@providers/accounts';
 import * as Cache from '@providers/cache';
 import { ActionType, FetchStatus } from '@providers/cache';
 import { useCluster } from '@providers/cluster';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
 import { TokenAccountInfo } from '@validators/accounts/token';
 import React from 'react';
 import { create } from 'superstruct';
 
-import { getCurrentTokenScaledUiAmountMultiplier, getTokenInfos } from '@/app/utils/token-info';
+import { withNumbersInsteadOfBigInts } from '@/app/shared/lib/bigint-to-number';
+import { Logger } from '@/app/shared/lib/logger';
+import { toKitAddress, toLegacyPublicKey } from '@/app/shared/lib/web3js-compat';
+import { getCurrentTokenScaledUiAmountMultiplier } from '@/app/utils/token-info';
 import { MintAccountInfo } from '@/app/validators/accounts/token';
 
 export type TokenInfoWithPubkey = {
     info: TokenAccountInfo;
     pubkey: PublicKey;
-    logoURI?: string;
-    symbol?: string;
-    name?: string;
 };
 
 interface AccountTokens {
     tokens?: TokenInfoWithPubkey[];
 }
 
-type State = Cache.State<AccountTokens>;
-type Dispatch = Cache.Dispatch<AccountTokens>;
+export type State = Cache.State<AccountTokens>;
+export type Dispatch = Cache.Dispatch<AccountTokens>;
 
-const StateContext = React.createContext<State | undefined>(undefined);
-const DispatchContext = React.createContext<Dispatch | undefined>(undefined);
+export const StateContext = React.createContext<State | undefined>(undefined);
+export const DispatchContext = React.createContext<Dispatch | undefined>(undefined);
 
 type ProviderProps = { children: React.ReactNode };
 export function TokensProvider({ children }: ProviderProps) {
@@ -65,51 +66,27 @@ async function fetchAccountTokens(dispatch: Dispatch, pubkey: PublicKey, cluster
     let status;
     let data;
     try {
-        const { value: tokenAccounts } = await new Connection(url, 'processed').getParsedTokenAccountsByOwner(pubkey, {
-            programId: TOKEN_PROGRAM_ID,
+        const rpc = getRpc(url);
+        const owner = toKitAddress(pubkey);
+        const fetchByProgram = (programId: PublicKey) =>
+            rpc
+                .getTokenAccountsByOwner(
+                    owner,
+                    { programId: toKitAddress(programId) },
+                    { commitment: 'processed', encoding: 'jsonParsed' },
+                )
+                .send();
+
+        const [{ value: tokenAccounts }, { value: token2022Accounts }] = await Promise.all([
+            fetchByProgram(TOKEN_PROGRAM_ID),
+            fetchByProgram(TOKEN_2022_PROGRAM_ID),
+        ]);
+
+        // Raw holdings only, uncapped. Consumers resolve symbol/logo/name themselves.
+        const tokens: TokenInfoWithPubkey[] = [...tokenAccounts, ...token2022Accounts].map(accountInfo => {
+            const info = create(withNumbersInsteadOfBigInts(accountInfo.account.data.parsed.info), TokenAccountInfo);
+            return { info, pubkey: toLegacyPublicKey(accountInfo.pubkey) };
         });
-        const { value: token2022Accounts } = await new Connection(url, 'processed').getParsedTokenAccountsByOwner(
-            pubkey,
-            {
-                programId: TOKEN_2022_PROGRAM_ID,
-            }
-        );
-
-        const tokens: TokenInfoWithPubkey[] = tokenAccounts
-            .concat(token2022Accounts)
-            .slice(0, 101)
-            .map(accountInfo => {
-                const parsedInfo = accountInfo.account.data.parsed.info;
-                const info = create(parsedInfo, TokenAccountInfo);
-                return { info, pubkey: accountInfo.pubkey };
-            });
-
-        // Fetch symbols and logos for tokens
-        const tokenMintInfos = await getTokenInfos(
-            tokens.map(t => t.info.mint),
-            cluster,
-            url
-        );
-        if (tokenMintInfos) {
-            const mappedTokenInfos = Object.fromEntries(
-                tokenMintInfos.map(t => [
-                    t.address,
-                    {
-                        logoURI: t.logoURI,
-                        name: t.name,
-                        symbol: t.symbol,
-                    },
-                ])
-            );
-            tokens.forEach(t => {
-                const tokenInfo = mappedTokenInfos[t.info.mint.toString()];
-                if (tokenInfo) {
-                    t.logoURI = tokenInfo.logoURI ?? undefined;
-                    t.symbol = tokenInfo.symbol;
-                    t.name = tokenInfo.name;
-                }
-            });
-        }
 
         data = {
             tokens,
@@ -117,7 +94,7 @@ async function fetchAccountTokens(dispatch: Dispatch, pubkey: PublicKey, cluster
         status = FetchStatus.Fetched;
     } catch (error) {
         if (cluster !== Cluster.Custom) {
-            console.error(error, { url });
+            Logger.error(new Error('Failed to fetch token accounts', { cause: error }), { url });
         }
         status = FetchStatus.FetchFailed;
     }
@@ -145,7 +122,7 @@ export function useFetchAccountOwnedTokens() {
         (pubkey: PublicKey) => {
             fetchAccountTokens(dispatch, pubkey, cluster, url);
         },
-        [dispatch, cluster, url]
+        [dispatch, cluster, url],
     );
 }
 

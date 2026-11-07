@@ -1,17 +1,20 @@
 'use client';
 
+import { Copyable } from '@components/common/Copyable';
 import { Epoch } from '@components/common/Epoch';
 import { ErrorCard } from '@components/common/ErrorCard';
 import { LoadingCard } from '@components/common/LoadingCard';
 import { Slot } from '@components/common/Slot';
-import { TableCardBody } from '@components/common/TableCardBody';
 import { FetchStatus } from '@providers/cache';
-import { useCluster } from '@providers/cluster';
+import { useCluster, useClusterInfo } from '@providers/cluster';
 import { useEpoch, useFetchEpoch } from '@providers/epoch';
 import { ClusterStatus } from '@utils/cluster';
-import { displayTimestampUtc } from '@utils/date';
 import React from 'react';
 
+import { Timestamp } from '@/app/components/shared/ui/timestamp';
+import { type KeyValueRowInput, KeyValueRows } from '@/app/shared/ui/key-value';
+import { OverviewCard } from '@/app/shared/ui/OverviewCard';
+import { PageHeader, PageLayout, PageSections } from '@/app/shared/ui/page-layout';
 import { getFirstSlotInEpoch, getLastSlotInEpoch } from '@/app/utils/epoch-schedule';
 
 type Props = {
@@ -21,35 +24,29 @@ type Props = {
 };
 
 export default function EpochDetailsPageClient({ params: { epoch } }: Props) {
-    let output;
-    if (isNaN(Number(epoch))) {
-        output = <ErrorCard text={`Epoch ${epoch} is not valid`} />;
-    } else {
-        output = <EpochOverviewCard epoch={Number(epoch)} />;
-    }
+    const content = isNaN(Number(epoch)) ? (
+        <ErrorCard text={`Epoch ${epoch} is not valid`} />
+    ) : (
+        <EpochOverviewCard epoch={Number(epoch)} />
+    );
 
     return (
-        <div className="container mt-n3">
-            <div className="header">
-                <div className="header-body">
-                    <h6 className="header-pretitle">Details</h6>
-                    <h2 className="header-title">Epoch</h2>
-                </div>
-            </div>
-            {output}
-        </div>
+        <PageLayout>
+            <PageHeader eyebrow="Details" title="Epoch" />
+            <PageSections>{content}</PageSections>
+        </PageLayout>
     );
 }
 
 type OverviewProps = { epoch: number };
 
 function EpochOverviewCard({ epoch }: OverviewProps) {
-    const { status, clusterInfo } = useCluster();
+    const { status } = useCluster();
+    const clusterInfo = useClusterInfo();
 
     const epochState = useEpoch(epoch);
     const fetchEpoch = useFetchEpoch();
 
-    // Fetch extra epoch info on load
     React.useEffect(() => {
         if (!clusterInfo) return;
         const { epochInfo, epochSchedule } = clusterInfo;
@@ -57,6 +54,12 @@ function EpochOverviewCard({ epoch }: OverviewProps) {
         if (epoch <= currentEpoch && !epochState && status === ClusterStatus.Connected)
             fetchEpoch(epoch, currentEpoch, epochSchedule);
     }, [epoch, epochState, clusterInfo, status, fetchEpoch]);
+
+    // Ahead of the `clusterInfo` check, which is also unresolved on a failed connection: the epoch entry
+    // only reports a failure once something has actually failed, so it is the more specific answer.
+    if (epochState?.status === FetchStatus.FetchFailed) {
+        return <ErrorCard text={`Failed to fetch details for epoch ${epoch}`} />;
+    }
 
     if (!clusterInfo) {
         return <LoadingCard message="Connecting to cluster" />;
@@ -67,96 +70,42 @@ function EpochOverviewCard({ epoch }: OverviewProps) {
     if (epoch > currentEpoch) {
         return <ErrorCard text={`Epoch ${epoch} hasn't started yet`} />;
     } else if (!epochState?.data) {
-        if (epochState?.status === FetchStatus.FetchFailed) {
-            return <ErrorCard text={`Failed to fetch details for epoch ${epoch}`} />;
-        }
         return <LoadingCard message="Loading epoch" />;
     }
 
+    const { data } = epochState;
     const firstSlot = getFirstSlotInEpoch(epochSchedule, BigInt(epoch));
     const lastSlot = getLastSlotInEpoch(epochSchedule, BigInt(epoch));
+    const inProgress = <span className="text-outer-space-300">Epoch in progress</span>;
+
+    const rows: KeyValueRowInput[] = [
+        {
+            label: 'Epoch',
+            value: (
+                <Copyable text={String(epoch)}>
+                    <Epoch epoch={epoch} />
+                </Copyable>
+            ),
+        },
+        epoch > 0 && { label: 'Previous Epoch', value: <Epoch epoch={epoch - 1} link /> },
+        { label: 'Next Epoch', value: currentEpoch > epoch ? <Epoch epoch={epoch + 1} link /> : inProgress },
+        { label: 'First Slot', value: <Slot slot={firstSlot} /> },
+        { label: 'Last Slot', value: <Slot slot={lastSlot} /> },
+        data.firstTimestamp && {
+            label: 'First Block Timestamp',
+            value: <Timestamp unixTimestamp={data.firstTimestamp} />,
+        },
+        { label: 'First Block', value: <Slot slot={data.firstBlock} link /> },
+        { label: 'Last Block', value: data.lastBlock !== undefined ? <Slot slot={data.lastBlock} link /> : inProgress },
+        data.lastTimestamp && {
+            label: 'Last Block Timestamp',
+            value: <Timestamp unixTimestamp={data.lastTimestamp} />,
+        },
+    ];
 
     return (
-        <>
-            <div className="card">
-                <div className="card-header">
-                    <h3 className="card-header-title mb-0 d-flex align-items-center">Overview</h3>
-                </div>
-                <TableCardBody>
-                    <tr>
-                        <td className="w-100">Epoch</td>
-                        <td className="text-lg-end font-monospace">
-                            <Epoch epoch={epoch} />
-                        </td>
-                    </tr>
-                    {epoch > 0 && (
-                        <tr>
-                            <td className="w-100">Previous Epoch</td>
-                            <td className="text-lg-end font-monospace">
-                                <Epoch epoch={epoch - 1} link />
-                            </td>
-                        </tr>
-                    )}
-                    <tr>
-                        <td className="w-100">Next Epoch</td>
-                        <td className="text-lg-end font-monospace">
-                            {currentEpoch > epoch ? (
-                                <Epoch epoch={epoch + 1} link />
-                            ) : (
-                                <span className="text-muted">Epoch in progress</span>
-                            )}
-                        </td>
-                    </tr>
-                    <tr>
-                        <td className="w-100">First Slot</td>
-                        <td className="text-lg-end font-monospace">
-                            <Slot slot={firstSlot} />
-                        </td>
-                    </tr>
-                    <tr>
-                        <td className="w-100">Last Slot</td>
-                        <td className="text-lg-end font-monospace">
-                            <Slot slot={lastSlot} />
-                        </td>
-                    </tr>
-                    {epochState.data.firstTimestamp && (
-                        <tr>
-                            <td className="w-100">First Block Timestamp</td>
-                            <td className="text-lg-end">
-                                <span className="font-monospace">
-                                    {displayTimestampUtc(epochState.data.firstTimestamp * 1000, true)}
-                                </span>
-                            </td>
-                        </tr>
-                    )}
-                    <tr>
-                        <td className="w-100">First Block</td>
-                        <td className="text-lg-end font-monospace">
-                            <Slot slot={epochState.data.firstBlock} link />
-                        </td>
-                    </tr>
-                    <tr>
-                        <td className="w-100">Last Block</td>
-                        <td className="text-lg-end font-monospace">
-                            {epochState.data.lastBlock !== undefined ? (
-                                <Slot slot={epochState.data.lastBlock} link />
-                            ) : (
-                                <span className="text-muted">Epoch in progress</span>
-                            )}
-                        </td>
-                    </tr>
-                    {epochState.data.lastTimestamp && (
-                        <tr>
-                            <td className="w-100">Last Block Timestamp</td>
-                            <td className="text-lg-end">
-                                <span className="font-monospace">
-                                    {displayTimestampUtc(epochState.data.lastTimestamp * 1000, true)}
-                                </span>
-                            </td>
-                        </tr>
-                    )}
-                </TableCardBody>
-            </div>
-        </>
+        <OverviewCard title="Overview">
+            <KeyValueRows rows={rows} />
+        </OverviewCard>
     );
 }

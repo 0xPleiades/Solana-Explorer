@@ -1,0 +1,343 @@
+/* eslint-disable no-restricted-syntax -- test assertions use RegExp for pattern matching */
+import { gen } from '@__fixtures__/gen';
+import type { Idl } from '@coral-xyz/anchor';
+import { Keypair, PublicKey } from '@solana/web3.js';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { vi } from 'vitest';
+
+import type { ProgramIdlPair, ProgramIdls, SupportedIdl } from '@/app/entities/idl';
+import { getOnChainIdls } from '@/app/entities/idl/model/sourced-idl';
+import { ClusterProvider } from '@/app/providers/cluster';
+import { invariant } from '@/app/shared/lib/invariant';
+import { Cluster, clusterSlug } from '@/app/utils/cluster';
+
+import { IdlCard } from '../IdlCard';
+
+const mocks = vi.hoisted(() => ({ useProgramIdls: vi.fn() }));
+
+// The card reads its IDLs through `useProgramIdls`; mock that entity hook (the card imports it via
+// the `@entities/idl` barrel, which re-exports this module).
+vi.mock('@/app/entities/idl/model/use-program-idls', () => ({ useProgramIdls: mocks.useProgramIdls }));
+
+vi.mock('next/navigation', () => ({
+    usePathname: vi.fn(),
+    useRouter: vi.fn(),
+    useSearchParams: vi.fn(),
+}));
+
+const DEFAULT_ADDRESS = PublicKey.default.toBase58();
+const PMP_PDA = gen.vanityAddress('PMP');
+
+function mockProgramIdls(overrides: Partial<ProgramIdlPair>): void {
+    const onChain: ProgramIdlPair = {
+        anchorIdl: undefined,
+        anchorIdlAddress: undefined,
+        programMetadataIdl: undefined,
+        programMetadataIdlAddress: undefined,
+        ...overrides,
+    };
+    mocks.useProgramIdls.mockReturnValue({ idls: getOnChainIdls(onChain) } satisfies ProgramIdls);
+}
+
+function createMockAnchorIdl(address = DEFAULT_ADDRESS): Idl {
+    return {
+        accounts: [],
+        address,
+        constants: [],
+        errors: [],
+        events: [],
+        instructions: [],
+        metadata: {
+            name: 'anchor_program',
+            spec: '0.1.0',
+            version: '0.1.0',
+        },
+        types: [],
+    };
+}
+
+function createMockProgramMetadataIdl(): SupportedIdl {
+    return {
+        kind: 'rootNode' as const,
+        name: 'metadata_program',
+        program: {
+            accounts: [],
+            definedTypes: [],
+            errors: [],
+            instructions: [],
+            pdas: [],
+            version: '0.4.2',
+        },
+        standard: 'codama',
+        version: '1.2.11',
+    } as unknown as SupportedIdl;
+}
+
+// Drive the "Generate SDK" flow and return the Castaway URL it opens, so a test can assert the
+// `idlSource` forwarded for the displayed IDL.
+function openCastawayUrl(): URL {
+    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate SDK' }));
+
+    expect(screen.getByText('Leaving Solana Explorer')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(windowOpenSpy).toHaveBeenCalledTimes(1);
+    const firstCall = windowOpenSpy.mock.calls[0];
+    invariant(firstCall, 'expected window.open to have been called');
+    const [openedUrl, target, features] = firstCall;
+    expect(target).toBe('_blank');
+    expect(features).toBe('noopener,noreferrer');
+    windowOpenSpy.mockRestore();
+    return new URL(openedUrl as string);
+}
+
+// The reworked card has no per-source tabs. Assert the former Anchor / Program Metadata source tabs
+// are gone — scoped by name so unrelated tablists the rendered IDL may contain are ignored.
+function expectNoSourceTabs(): void {
+    expect(screen.queryByRole('tab', { name: 'Program Metadata' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Anchor' })).not.toBeInTheDocument();
+}
+
+describe('IdlCard', () => {
+    const programId = DEFAULT_ADDRESS;
+
+    const renderCard = () =>
+        render(
+            <ClusterProvider>
+                <IdlCard programId={programId} />
+            </ClusterProvider>,
+        );
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+
+        (useSearchParams as ReturnType<typeof vi.fn>).mockReturnValue({
+            get: () => clusterSlug(Cluster.MainnetBeta),
+            has: (_query?: string) => false,
+            toString: () => '',
+        });
+
+        (usePathname as ReturnType<typeof vi.fn>).mockReturnValue('/');
+
+        (useRouter as ReturnType<typeof vi.fn>).mockReturnValue({
+            push: vi.fn(),
+            refresh: vi.fn(),
+            replace: vi.fn(),
+        });
+    });
+
+    test('should render the PMP IDL (no source tabs) when a program-metadata IDL exists', async () => {
+        mockProgramIdls({ programMetadataIdl: createMockProgramMetadataIdl() });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+        // Standard + version badge, not the fallback-source marker; and no per-source tabs.
+        expect(screen.getByText('Codama (version 1.2.11)')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Fallback IDL source')).not.toBeInTheDocument();
+        expectNoSourceTabs();
+
+        const castawayUrl = openCastawayUrl();
+        expect(castawayUrl.origin).toBe('https://www.castaway.lol');
+        expect(castawayUrl.searchParams.get('program')).toBe(programId);
+        expect(castawayUrl.searchParams.get('idlSource')).toBe('program-metadata');
+        expect(castawayUrl.searchParams.get('network')).toBe('mainnet-beta');
+    });
+
+    test('should show the IDL metadata (address, source, program version) under the badge', async () => {
+        mockProgramIdls({
+            programMetadataIdl: createMockProgramMetadataIdl(),
+            programMetadataIdlAddress: PMP_PDA,
+        });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+
+        // Source row reflects the displayed IDL's origin.
+        expect(screen.getByText('Source')).toBeInTheDocument();
+        expect(screen.getByText('PMP')).toBeInTheDocument();
+        // Address row links the storage-account PDA to its account page (via the shared AddressLink,
+        // whose accessible name is "Open address <addr>" and whose visible text is mid-truncated).
+        const addressLink = screen.getByRole('link', { name: `Open address ${PMP_PDA}` });
+        expect(addressLink.getAttribute('href')).toContain(`/address/${PMP_PDA}`);
+        // Program version is the program's own semver (program.version), not the spec/standard label.
+        expect(screen.getByText('Program Version')).toBeInTheDocument();
+        expect(screen.getByText('0.4.2')).toBeInTheDocument();
+    });
+
+    test('should show the program name (title-cased) under the badge when the IDL names the program', async () => {
+        const idl = createMockProgramMetadataIdl();
+        (idl as unknown as { program: { name: string } }).program.name = 'crypto_primitives';
+        mockProgramIdls({ programMetadataIdl: idl, programMetadataIdlAddress: PMP_PDA });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+        // Scope to the info-block <dt>; the rendered instruction table also has a "Name" column header.
+        expect(screen.getByText('Name', { selector: 'dt' })).toBeInTheDocument();
+        expect(screen.getByText('Crypto Primitives')).toBeInTheDocument();
+    });
+
+    test('should label the source as Anchor when falling back to the Anchor IDL', async () => {
+        mockProgramIdls({ anchorIdl: createMockAnchorIdl(), anchorIdlAddress: DEFAULT_ADDRESS });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+        // The Source <dd> is exactly "Anchor"; the badge element reads "Anchor: 0.30.1 (spec: 0.1.0)",
+        // so an exact-text query matches only the Source row.
+        expect(screen.getByText('Anchor')).toBeInTheDocument();
+    });
+
+    test('should fall back to the Anchor IDL with a warning badge + tooltip when no PMP IDL exists', async () => {
+        mockProgramIdls({ anchorIdl: createMockAnchorIdl() });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+        // Single badge: standard + era + spec version; the fallback info icon sits alongside.
+        expect(screen.getByText('Anchor 0.30.1 (version 0.1.0)')).toBeInTheDocument();
+        expect(screen.getByLabelText('Fallback IDL source')).toBeInTheDocument();
+        expectNoSourceTabs();
+
+        const castawayUrl = openCastawayUrl();
+        expect(castawayUrl.searchParams.get('idlSource')).toBe('anchor');
+    });
+
+    test('should show only the PMP IDL when both sources exist (Anchor not surfaced)', async () => {
+        mockProgramIdls({
+            anchorIdl: createMockAnchorIdl(),
+            programMetadataIdl: createMockProgramMetadataIdl(),
+        });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByText('Codama (version 1.2.11)')).toBeInTheDocument();
+        });
+        // No fallback marker and no Anchor tab — the Anchor source is not reachable from the card.
+        expect(screen.queryByLabelText('Fallback IDL source')).not.toBeInTheDocument();
+        expectNoSourceTabs();
+
+        const castawayUrl = openCastawayUrl();
+        expect(castawayUrl.searchParams.get('idlSource')).toBe('program-metadata');
+    });
+
+    test('should show the PMP IDL when both sources are Anchor IDLs', async () => {
+        const pmpIdl = createMockAnchorIdl();
+        mockProgramIdls({
+            anchorIdl: createMockAnchorIdl(),
+            programMetadataIdl: { ...pmpIdl, metadata: { ...pmpIdl.metadata, name: 'pmp_program' } },
+            programMetadataIdlAddress: PMP_PDA,
+        });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+        });
+        expect(screen.getByText('PMP')).toBeInTheDocument();
+        expect(screen.getByText('Pmp Program')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Fallback IDL source')).not.toBeInTheDocument();
+
+        const castawayUrl = openCastawayUrl();
+        expect(castawayUrl.searchParams.get('idlSource')).toBe('program-metadata');
+    });
+
+    test('should render the mismatch warning when the displayed IDL program id does not match', async () => {
+        mockProgramIdls({
+            // Imitate a malicious IDL whose address differs from the program being viewed.
+            anchorIdl: createMockAnchorIdl(Keypair.generate().publicKey.toBase58()),
+        });
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByText('IDL Program ID Mismatch')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/does not match the program being viewed/)).toBeInTheDocument();
+        // The IDL content (and its tooling) is hidden behind the warning.
+        expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+    });
+
+    test('should render the empty upload state when no IDL exists', async () => {
+        mockProgramIdls({});
+
+        renderCard();
+
+        await waitFor(() => {
+            expect(screen.getByText('Upload IDL')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/doesn't have an IDL yet/)).toBeInTheDocument();
+        expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+        // The IDL history link lives in the header, so it's offered even when the card has no IDL.
+        expect(screen.getByRole('link', { name: /IDL history/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /MCP & API/i })).toBeInTheDocument();
+    });
+
+    test('should link to the idl.solana.com history view for the program', async () => {
+        mockProgramIdls({ programMetadataIdl: createMockProgramMetadataIdl() });
+
+        renderCard();
+
+        const link = await screen.findByRole('link', { name: /IDL history/i });
+        const url = new URL(link.getAttribute('href') as string);
+        expect(url.origin).toBe('https://idl.solana.com');
+        expect(url.searchParams.get('programId')).toBe(programId);
+        expect(url.searchParams.get('mode')).toBe('history');
+        expect(url.searchParams.get('cluster')).toBe('mainnet-beta');
+    });
+
+    test('should open the Orquestra project page behind the leaving-Explorer interstitial', async () => {
+        mockProgramIdls({ programMetadataIdl: createMockProgramMetadataIdl() });
+
+        renderCard();
+
+        const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+        fireEvent.click(await screen.findByRole('button', { name: /MCP & API/i }));
+
+        // The interstitial names the destination and shows the full URL before anything opens.
+        expect(screen.getByText('Leaving Solana Explorer')).toBeInTheDocument();
+        expect(screen.getByText(/going to Orquestra/)).toBeInTheDocument();
+        expect(windowOpenSpy).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+        expect(windowOpenSpy).toHaveBeenCalledWith(
+            `https://orquestra.dev/project/${programId}`,
+            '_blank',
+            'noopener,noreferrer',
+        );
+        windowOpenSpy.mockRestore();
+    });
+
+    test('should not open Orquestra when the interstitial is cancelled', async () => {
+        mockProgramIdls({ programMetadataIdl: createMockProgramMetadataIdl() });
+
+        renderCard();
+
+        const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+        fireEvent.click(await screen.findByRole('button', { name: /MCP & API/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+        await waitFor(() => {
+            expect(screen.queryByText('Leaving Solana Explorer')).not.toBeInTheDocument();
+        });
+        expect(windowOpenSpy).not.toHaveBeenCalled();
+        windowOpenSpy.mockRestore();
+    });
+});

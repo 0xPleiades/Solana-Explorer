@@ -2,14 +2,15 @@ import { UnknownAccountCard } from '@components/account/UnknownAccountCard';
 import { Address } from '@components/common/Address';
 import { DownloadableIcon } from '@components/common/Downloadable';
 import { InfoTooltip } from '@components/common/InfoTooltip';
-import { SecurityTXTBadge } from '@components/common/SecurityTXTBadge';
 import { Slot } from '@components/common/Slot';
 import { SolBalance } from '@components/common/SolBalance';
-import { TableCardBody } from '@components/common/TableCardBody';
-import { Account, useFetchAccountInfo } from '@providers/accounts';
+import { useRefreshAccount } from '@entities/account';
+import { AccountCard } from '@features/account';
+import { Account } from '@providers/accounts';
 import { useCluster } from '@providers/cluster';
 import { PublicKey } from '@solana/web3.js';
 import { addressLabel } from '@utils/tx';
+import { hashProgramBuffer } from '@utils/verified-builds';
 import {
     ProgramAccountInfo,
     ProgramBufferAccountInfo,
@@ -18,12 +19,16 @@ import {
 } from '@validators/accounts/upgradeable-program';
 import Link from 'next/link';
 import React from 'react';
-import { ExternalLink, RefreshCw } from 'react-feather';
 
+import { Badge } from '@/app/components/shared/ui/badge';
+import { ProgramSecurityTXTBadge } from '@/app/features/security-txt/ui/SecurityTXTBadge';
+import { ProgramSecurityTXTLabel } from '@/app/features/security-txt/ui/SecurityTXTLabel';
 import { useSquadsMultisigLookup } from '@/app/providers/squadsMultisig';
+import { KeyValueRows } from '@/app/shared/ui/key-value';
 import { Cluster } from '@/app/utils/cluster';
 import { useClusterPath } from '@/app/utils/url';
 
+import { Copyable } from '../common/Copyable';
 import { VerifiedProgramBadge } from '../common/VerifiedProgramBadge';
 
 export function UpgradeableLoaderAccountSection({
@@ -35,6 +40,7 @@ export function UpgradeableLoaderAccountSection({
     parsedData: UpgradeableLoaderAccount;
     programData: ProgramDataAccountInfo | undefined;
 }) {
+    // TODO: adopt @explorer/entity-inspector's accounts module (src/accounts: classifyAccountKindBase + kinds.ts; needs a browser-safe ./accounts subpath) instead of this inline kind dispatch
     switch (parsedData.type) {
         case 'program': {
             return (
@@ -66,134 +72,90 @@ export function UpgradeableProgramSection({
     programAccount: ProgramAccountInfo;
     programData: ProgramDataAccountInfo | undefined;
 }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
     const { cluster } = useCluster();
     const { data: squadMapInfo } = useSquadsMultisigLookup(programData?.authority, cluster);
 
     const label = addressLabel(account.pubkey.toBase58(), cluster);
 
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">
-                    {programData === undefined && 'Closed '}Program Account
-                </h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                {label && (
-                    <tr>
-                        <td>Address Label</td>
-                        <td className="text-lg-end">{label}</td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Balance (SOL)</td>
-                    <td className="text-lg-end text-uppercase">
-                        <SolBalance lamports={account.lamports} />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Executable</td>
-                    <td className="text-lg-end">{programData !== undefined ? 'Yes' : 'No'}</td>
-                </tr>
-                <tr>
-                    <td>Executable Data{programData === undefined && ' (Closed)'}</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={programAccount.programData} alignRight link />
-                    </td>
-                </tr>
-                {programData !== undefined && (
-                    <>
-                        <tr>
-                            <td>Upgradeable</td>
-                            <td className="text-lg-end">{programData.authority !== null ? 'Yes' : 'No'}</td>
-                        </tr>
-                        <tr>
-                            <td>
-                                <VerifiedLabel />
-                            </td>
-                            <td className="text-lg-end">
-                                <VerifiedProgramBadge programData={programData} pubkey={account.pubkey} />
-                            </td>
-                        </tr>
-                        <tr>
-                            <td>
-                                <SecurityLabel />
-                            </td>
-                            <td className="text-lg-end">
-                                <SecurityTXTBadge programData={programData} pubkey={account.pubkey} />
-                            </td>
-                        </tr>
-                        <tr>
-                            <td>Last Deployed Slot</td>
-                            <td className="text-lg-end">
-                                <Slot slot={programData.slot} link />
-                            </td>
-                        </tr>
-                        {programData.authority !== null && (
-                            <>
-                                <tr>
-                                    <td>Upgrade Authority</td>
-                                    <td className="text-lg-end">
-                                        {cluster == Cluster.MainnetBeta && squadMapInfo?.isSquad ? (
-                                            <MultisigBadge pubkey={account.pubkey} />
-                                        ) : null}
-                                        <Address pubkey={programData.authority} alignRight link />
-                                    </td>
-                                </tr>
-                            </>
-                        )}
-                    </>
-                )}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title={`${programData === undefined ? 'Closed ' : ''}Program Account`}
+            account={account}
+            refresh={() => refresh(account.pubkey, 'parsed')}
+            analyticsSection="program_section"
+        >
+            <KeyValueRows
+                rows={[
+                    {
+                        label: 'Address',
+                        value: <Address pubkey={account.pubkey} raw />,
+                    },
+                    label && {
+                        label: 'Address Label',
+                        value: label,
+                    },
+                    {
+                        label: 'Balance (SOL)',
+                        value: <SolBalance lamports={account.lamports} />,
+                    },
+                    {
+                        label: 'Executable',
+                        value: programData !== undefined ? 'Yes' : 'No',
+                    },
+                    {
+                        label: `Executable Data${programData === undefined ? ' (Closed)' : ''}`,
+                        value: <Address pubkey={programAccount.programData} link />,
+                    },
+                    programData !== undefined && {
+                        label: 'Upgradeable',
+                        value: programData.authority !== null ? 'Yes' : 'No',
+                    },
+                    programData !== undefined && {
+                        label: <VerifiedLabel />,
+                        value: <VerifiedProgramBadge programData={programData} pubkey={account.pubkey} />,
+                    },
+                    programData !== undefined && {
+                        label: <ProgramSecurityTXTLabel />,
+                        value: <ProgramSecurityTXTBadge programPubkey={account.pubkey} />,
+                    },
+                    programData !== undefined && {
+                        label: 'Last Deployed Slot',
+                        value: <Slot slot={programData.slot} link />,
+                    },
+                    programData !== undefined &&
+                        programData.authority !== null && {
+                            label: 'Upgrade Authority',
+                            value: (
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <span className="min-w-0">
+                                        <Address pubkey={programData.authority} link />
+                                    </span>
+                                    {cluster == Cluster.MainnetBeta && squadMapInfo?.isSquad && (
+                                        <MultisigBadge pubkey={account.pubkey} />
+                                    )}
+                                </div>
+                            ),
+                        },
+                ]}
+            />
+        </AccountCard>
     );
 }
 
 function MultisigBadge({ pubkey }: { pubkey: PublicKey }) {
     const programMultisigTabPath = useClusterPath({ pathname: `/address/${pubkey.toBase58()}/program-multisig` });
     return (
-        <h3 className="mb-0">
-            <Link className="badge bg-success-soft rank" href={programMultisigTabPath}>
-                Program Multisig
-            </Link>
-        </h3>
-    );
-}
-
-function SecurityLabel() {
-    return (
-        <InfoTooltip text="Security.txt helps security researchers to contact developers if they find security bugs.">
-            <Link rel="noopener noreferrer" target="_blank" href="https://github.com/neodyme-labs/solana-security-txt">
-                <span className="security-txt-link-color-hack-reee">Security.txt</span>
-                <ExternalLink className="align-text-top ms-2" size={13} />
-            </Link>
-        </InfoTooltip>
+        <Badge ui="tw" tone="soft" variant="success" className="shrink-0" asChild>
+            <Link href={programMultisigTabPath}>Program Multisig</Link>
+        </Badge>
     );
 }
 
 function VerifiedLabel() {
     return (
-        <InfoTooltip text="Verified builds allow users can ensure that the hash of the on-chain program matches the hash of the program of the given codebase (registry hosted by osec.io).">
-            <Link
-                rel="noopener noreferrer"
-                target="_blank"
-                href="https://github.com/Ellipsis-Labs/solana-verifiable-build"
-            >
-                <span className="security-txt-link-color-hack-reee">Verified Build</span>
-                <ExternalLink className="align-text-top ms-2" size={13} />
-            </Link>
+        <InfoTooltip text="Verified builds allow users to ensure that the hash of the on-chain program matches the hash of the program of the given codebase (registry hosted by osec.io).">
+            Verified Build
         </InfoTooltip>
     );
 }
@@ -205,60 +167,47 @@ export function UpgradeableProgramDataSection({
     account: Account;
     programData: ProgramDataAccountInfo;
 }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Program Executable Data Account</h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
-
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Balance (SOL)</td>
-                    <td className="text-lg-end text-uppercase">
-                        <SolBalance lamports={account.lamports} />
-                    </td>
-                </tr>
-                {account.space !== undefined && (
-                    <tr>
-                        <td>Data Size (Bytes)</td>
-                        <td className="text-lg-end">
+        <AccountCard
+            title="Program Executable Data Account"
+            account={account}
+            refresh={() => refresh(account.pubkey, 'parsed')}
+            analyticsSection="program_data_section"
+        >
+            <KeyValueRows
+                rows={[
+                    {
+                        label: 'Address',
+                        value: <Address pubkey={account.pubkey} raw />,
+                    },
+                    {
+                        label: 'Balance (SOL)',
+                        value: <SolBalance lamports={account.lamports} />,
+                    },
+                    account.space !== undefined && {
+                        label: 'Data Size (Bytes)',
+                        value: (
                             <DownloadableIcon data={programData.data[0]} filename={`${account.pubkey.toString()}.bin`}>
-                                <span className="me-2">{account.space}</span>
+                                <span className="mr-1.5">{account.space}</span>
                             </DownloadableIcon>
-                        </td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Upgradeable</td>
-                    <td className="text-lg-end">{programData.authority !== null ? 'Yes' : 'No'}</td>
-                </tr>
-                <tr>
-                    <td>Last Deployed Slot</td>
-                    <td className="text-lg-end">
-                        <Slot slot={programData.slot} link />
-                    </td>
-                </tr>
-                {programData.authority !== null && (
-                    <tr>
-                        <td>Upgrade Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={programData.authority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-            </TableCardBody>
-        </div>
+                        ),
+                    },
+                    {
+                        label: 'Upgradeable',
+                        value: programData.authority !== null ? 'Yes' : 'No',
+                    },
+                    {
+                        label: 'Last Deployed Slot',
+                        value: <Slot slot={programData.slot} link />,
+                    },
+                    programData.authority !== null && {
+                        label: 'Upgrade Authority',
+                        value: <Address pubkey={programData.authority} link />,
+                    },
+                ]}
+            />
+        </AccountCard>
     );
 }
 
@@ -269,51 +218,55 @@ export function UpgradeableProgramBufferSection({
     account: Account;
     programBuffer: ProgramBufferAccountInfo;
 }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
+    const bufferHash = React.useMemo(() => hashProgramBuffer(programBuffer), [programBuffer]);
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Program Deploy Buffer Account</h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
+        <AccountCard
+            title="Program Deploy Buffer Account"
+            account={account}
+            refresh={() => refresh(account.pubkey, 'parsed')}
+            analyticsSection="program_buffer_section"
+        >
+            <KeyValueRows
+                rows={[
+                    {
+                        label: 'Address',
+                        value: <Address pubkey={account.pubkey} raw />,
+                    },
+                    {
+                        label: 'Balance (SOL)',
+                        value: <SolBalance lamports={account.lamports} />,
+                    },
+                    account.space !== undefined && {
+                        label: 'Data Size (Bytes)',
+                        value: account.space,
+                    },
+                    bufferHash && {
+                        label: <BufferHashLabel />,
+                        value: (
+                            <Copyable text={bufferHash}>
+                                <span className="break-all font-mono">{bufferHash}</span>
+                            </Copyable>
+                        ),
+                    },
+                    programBuffer.authority !== null && {
+                        label: 'Deploy Authority',
+                        value: <Address pubkey={programBuffer.authority} link />,
+                    },
+                    {
+                        label: 'Owner',
+                        value: <Address pubkey={account.owner} link />,
+                    },
+                ]}
+            />
+        </AccountCard>
+    );
+}
 
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Balance (SOL)</td>
-                    <td className="text-lg-end text-uppercase">
-                        <SolBalance lamports={account.lamports} />
-                    </td>
-                </tr>
-                {account.space !== undefined && (
-                    <tr>
-                        <td>Data Size (Bytes)</td>
-                        <td className="text-lg-end">{account.space}</td>
-                    </tr>
-                )}
-                {programBuffer.authority !== null && (
-                    <tr>
-                        <td>Deploy Authority</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={programBuffer.authority} alignRight link />
-                        </td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Owner</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.owner} alignRight link />
-                    </td>
-                </tr>
-            </TableCardBody>
-        </div>
+function BufferHashLabel() {
+    return (
+        <InfoTooltip text="sha256 of the buffer's program bytes with trailing zero padding removed — the same hash as `solana-verify get-buffer-hash`. Compare it against the build hash you expect to deploy.">
+            Buffer Hash
+        </InfoTooltip>
     );
 }

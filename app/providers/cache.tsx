@@ -11,6 +11,10 @@ export type CacheEntry<T> = {
     data?: T;
 };
 
+export function isFetchingWithoutData<T>(entry: CacheEntry<T>): boolean {
+    return entry.status === FetchStatus.Fetching && entry.data === undefined;
+}
+
 export type State<T> = {
     entries: {
         [key: string]: CacheEntry<T>;
@@ -34,11 +38,12 @@ export type Update<T> = {
 export type Clear = {
     type: ActionType.Clear;
     url: string;
+    // When provided, clears only this entry; otherwise clears the whole cache.
+    key?: string | number;
 };
 
 export type Action<T> = Update<T> | Clear;
 export type Dispatch<T> = (action: Action<T>) => void;
-type Reducer<T, U> = (state: State<T>, action: Action<U>) => State<T>;
 type Reconciler<T, U> = (entry: T | undefined, update: U | undefined) => T | undefined;
 
 function defaultReconciler<T>(entry: T | undefined, update: T | undefined) {
@@ -61,7 +66,7 @@ function defaultReducer<T>(state: State<T>, action: Action<T>) {
 }
 
 export function useReducer<T>(url: string) {
-    return React.useReducer<Reducer<T, T>>(defaultReducer, { entries: {}, url });
+    return React.useReducer(defaultReducer<T>, { entries: {}, url } satisfies State<T>);
 }
 
 export function useCustomReducer<T, U>(url: string, reconciler: Reconciler<T, U>) {
@@ -70,11 +75,18 @@ export function useCustomReducer<T, U>(url: string, reconciler: Reconciler<T, U>
             return reducer(state, action, reconciler);
         };
     }, [reconciler]);
-    return React.useReducer<Reducer<T, U>>(customReducer, { entries: {}, url });
+    return React.useReducer(customReducer, { entries: {}, url } satisfies State<T>);
 }
 
 export function reducer<T, U>(state: State<T>, action: Action<U>, reconciler: Reconciler<T, U>): State<T> {
     if (action.type === ActionType.Clear) {
+        // Per-key clear: drop just one entry, leaving sibling addresses intact.
+        if (action.key !== undefined) {
+            if (action.url !== state.url) return state;
+            const entries = { ...state.entries };
+            delete entries[action.key];
+            return { ...state, entries };
+        }
         return { entries: {}, url: action.url };
     } else if (action.url !== state.url) {
         return state;

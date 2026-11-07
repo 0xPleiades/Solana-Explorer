@@ -1,10 +1,15 @@
 'use client';
 
+import { type BlockData, fetchBlock as fetchBlockBySlot } from '@entities/block-data';
+import { getRpc } from '@entities/cluster';
 import * as Cache from '@providers/cache';
+import { useCacheEntry } from '@providers/cache-entry';
 import { useCluster } from '@providers/cluster';
-import { Connection, PublicKey, VersionedBlockResponse } from '@solana/web3.js';
+import type { Address, Slot } from '@solana/kit';
 import { Cluster } from '@utils/cluster';
 import React from 'react';
+
+import { Logger } from '@/app/shared/lib/logger';
 
 export enum FetchStatus {
     Fetching,
@@ -18,11 +23,11 @@ export enum ActionType {
 }
 
 type Block = {
-    block?: VersionedBlockResponse;
-    blockLeader?: PublicKey;
-    childSlot?: number;
-    childLeader?: PublicKey;
-    parentLeader?: PublicKey;
+    block?: BlockData;
+    blockLeader?: Address;
+    childSlot?: Slot;
+    childLeader?: Address;
+    parentLeader?: Address;
 };
 
 type State = Cache.State<Block>;
@@ -55,7 +60,7 @@ export function useBlock(key: number): Cache.CacheEntry<Block> | undefined {
         throw new Error(`useBlock must be used within a BlockProvider`);
     }
 
-    return context.entries[key];
+    return useCacheEntry(context.entries, key);
 }
 
 export async function fetchBlock(dispatch: Dispatch, url: string, cluster: Cluster, slot: number) {
@@ -70,28 +75,27 @@ export async function fetchBlock(dispatch: Dispatch, url: string, cluster: Clust
     let data: Block | undefined = undefined;
 
     try {
-        const connection = new Connection(url, 'confirmed');
-        const block = await connection.getBlock(slot, {
-            maxSupportedTransactionVersion: 0,
-        });
+        const rpc = getRpc(url);
+        const block = await fetchBlockBySlot(url, slot);
         if (block === null) {
             data = {};
             status = FetchStatus.Fetched;
         } else {
-            const childSlot = (await connection.getBlocks(slot + 1, slot + 100)).shift();
+            const childSlot = (await rpc.getBlocks(BigInt(slot + 1), BigInt(slot + 100)).send()).at(0);
             const firstLeaderSlot = block.parentSlot;
 
-            let leaders: PublicKey[] = [];
+            let leaders: Address[] = [];
             try {
-                const lastLeaderSlot = childSlot !== undefined ? childSlot : slot;
-                const slotLeadersLimit = lastLeaderSlot - block.parentSlot + 1;
-                leaders = await connection.getSlotLeaders(firstLeaderSlot, slotLeadersLimit);
-            } catch (err) {
+                const lastLeaderSlot = childSlot ?? BigInt(slot);
+                const slotLeadersLimit = Number(lastLeaderSlot - block.parentSlot + 1n);
+                leaders = await rpc.getSlotLeaders(firstLeaderSlot, slotLeadersLimit).send();
+            } catch (_err) {
                 // ignore errors
             }
 
-            const getLeader = (slot: number) => {
-                return leaders.at(slot - firstLeaderSlot);
+            const getLeader = (leaderSlot: Slot | bigint | number): Address | undefined => {
+                const leaderIndex = Number(BigInt(leaderSlot) - firstLeaderSlot);
+                return leaders.at(leaderIndex);
             };
 
             data = {
@@ -106,7 +110,7 @@ export async function fetchBlock(dispatch: Dispatch, url: string, cluster: Clust
     } catch (err) {
         status = FetchStatus.FetchFailed;
         if (cluster !== Cluster.Custom) {
-            console.error(err, { tags: { url } });
+            Logger.error(err, { url });
         }
     }
 

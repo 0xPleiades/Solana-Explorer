@@ -1,0 +1,59 @@
+import {
+    BaseReceiptImage,
+    createReceipt,
+    isReceiptEnabled,
+    parseCompositeSignature,
+    ReceiptError,
+} from '@features/receipt/server';
+import { IMAGE_SIZE } from '@shared/lib/og/image-size';
+import { isSignatureValid } from '@utils/tx';
+import { ImageResponse } from 'next/og';
+import { NextRequest, NextResponse } from 'next/server';
+
+import { Logger } from '@/app/shared/lib/logger';
+
+const CACHE_DURATION = 30 * 60; // 30 minutes
+const DEFAULT_CACHE_HEADERS = {
+    'Cache-Control': `public, max-age=${CACHE_DURATION}, s-maxage=${CACHE_DURATION}, stale-while-revalidate=60`,
+};
+
+type Props = Readonly<{
+    params: Promise<{ signature: string }>;
+}>;
+
+export async function GET(request: NextRequest, props: Props) {
+    const { signature: compositeSignature } = await props.params;
+    const { signature, cluster } = parseCompositeSignature(compositeSignature);
+
+    if (!isReceiptEnabled) return new NextResponse('Not Found', { status: 404 });
+    if (!signature) return new Response('Signature is required', { status: 400 });
+    if (!isSignatureValid(signature)) return new NextResponse('Invalid transaction signature', { status: 400 });
+
+    const cacheHeaders = getCacheHeaders();
+
+    try {
+        const result = await createReceipt(signature, cluster);
+        const receipt = result.kind === 'ok' ? result.receipt : undefined;
+
+        const imageResponse = new ImageResponse(<BaseReceiptImage data={receipt} />, {
+            ...IMAGE_SIZE,
+        });
+        const imageBuffer = await imageResponse.arrayBuffer();
+
+        return new NextResponse(imageBuffer, {
+            headers: { ...cacheHeaders, 'Content-Type': 'image/png' },
+        });
+    } catch (e) {
+        Logger.error(new Error('[og:receipt] Failed to process receipt', { cause: e }), { signature });
+
+        const status = e instanceof ReceiptError ? e.status : 500;
+        const body = status === 404 ? 'Receipt not found' : 'Failed to process request';
+        return new NextResponse(body, { status });
+    }
+}
+
+function getCacheHeaders(): HeadersInit {
+    const custom = process.env.RECEIPT_CACHE_HEADERS;
+    if (!custom) return { ...DEFAULT_CACHE_HEADERS };
+    return { 'Cache-Control': custom };
+}

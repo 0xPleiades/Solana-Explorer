@@ -1,0 +1,42 @@
+import { array, is, record, string, unknown } from 'superstruct';
+
+import { formatSnsName, getSnsNameAccount } from '../lib/sns-name-service';
+import type { DomainInfo } from '../model/types';
+
+const BONFIDA_API = 'https://sns-api.bonfida.com/v2/user/domains';
+
+export async function fetchSnsDomains(address: string): Promise<DomainInfo[] | undefined> {
+    const response = await fetch(`${BONFIDA_API}/${address}`);
+
+    if (response.status === 404) return undefined;
+
+    if (!response.ok) {
+        throw new Error('Failed to fetch domains from Bonfida API');
+    }
+
+    const data: unknown = await response.json();
+    const domainNames = parseBonfidaResponse(data, address);
+
+    return Promise.all(
+        domainNames.map(async name => ({ address: await getSnsNameAccount(name), name: formatSnsName(name) })),
+    );
+}
+
+const BonfidaResponse = record(string(), unknown());
+const DomainNames = array(string());
+
+function parseBonfidaResponse(data: unknown, address: string): string[] {
+    // arrays satisfy record() – exclude explicitly
+    if (!is(data, BonfidaResponse) || Array.isArray(data)) {
+        throw new Error('Unexpected Bonfida API response format');
+    }
+
+    const value = data[address];
+    if (value === undefined) return [];
+
+    if (!is(value, DomainNames)) {
+        throw new Error('Unexpected Bonfida API response format');
+    }
+
+    return value;
+}

@@ -1,60 +1,85 @@
+'use client';
+
 import { Address } from '@components/common/Address';
 import { SolBalance } from '@components/common/SolBalance';
-import { TableCardBody } from '@components/common/TableCardBody';
+import { AdjacentClusterLink, SearchingClusterIndicator, useClusterResourceSearch } from '@entities/cluster';
+import { AccountCard } from '@features/account';
 import { Account } from '@providers/accounts';
 import { useCluster } from '@providers/cluster';
+import { address as createAddress, createSolanaRpc } from '@solana/kit';
 import { addressLabel } from '@utils/tx';
-import React from 'react';
+
+import { type KeyValueRowInput, KeyValueRows } from '@/app/shared/ui/key-value';
 
 export function UnknownAccountCard({ account }: { account: Account }) {
     const { cluster } = useCluster();
 
     const label = addressLabel(account.pubkey.toBase58(), cluster);
+    const rows: KeyValueRowInput[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        label && { label: 'Address Label', value: label },
+        {
+            label: 'Balance (SOL)',
+            value:
+                account.lamports === 0 ? (
+                    <AccountNofFound account={account} />
+                ) : (
+                    <SolBalance lamports={account.lamports} />
+                ),
+        },
+        account.space !== undefined && {
+            label: 'Allocated Data Size',
+            value: `${account.space} byte(s)`,
+        },
+        { label: 'Assigned Program Id', value: <Address pubkey={account.owner} link /> },
+        { label: 'Executable', value: account.executable ? 'Yes' : 'No' },
+    ];
+
     return (
-        <div className="card">
-            <div className="card-header align-items-center">
-                <h3 className="card-header-title">Overview</h3>
-            </div>
-
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                {label && (
-                    <tr>
-                        <td>Address Label</td>
-                        <td className="text-lg-end">{label}</td>
-                    </tr>
-                )}
-                <tr>
-                    <td>Balance (SOL)</td>
-                    <td className="text-lg-end">
-                        {account.lamports === 0 ? 'Account does not exist' : <SolBalance lamports={account.lamports} />}
-                    </td>
-                </tr>
-
-                {account.space !== undefined && (
-                    <tr>
-                        <td>Allocated Data Size</td>
-                        <td className="text-lg-end">{account.space} byte(s)</td>
-                    </tr>
-                )}
-
-                <tr>
-                    <td>Assigned Program Id</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.owner} alignRight link />
-                    </td>
-                </tr>
-
-                <tr>
-                    <td>Executable</td>
-                    <td className="text-lg-end">{account.executable ? 'Yes' : 'No'}</td>
-                </tr>
-            </TableCardBody>
-        </div>
+        <AccountCard title="Overview" account={account}>
+            <KeyValueRows rows={rows} />
+        </AccountCard>
     );
+}
+
+const LABELS = {
+    'not-found': 'Account does not exist',
+};
+
+function AccountNofFound({ account, labels = LABELS }: { account: Account; labels?: typeof LABELS }) {
+    const { cluster } = useCluster();
+    const address = account.pubkey.toBase58();
+    const { status, searchingCluster, foundCluster } = useClusterResourceSearch({
+        currentCluster: cluster,
+        probe: probeAccount,
+        resourceId: address,
+    });
+
+    if (status === 'searching' && searchingCluster !== undefined) {
+        return (
+            <span>
+                <SearchingClusterIndicator searchingCluster={searchingCluster} />
+                <span className="align-middle">{labels['not-found']}</span>
+            </span>
+        );
+    }
+
+    if (status === 'found' && foundCluster !== undefined) {
+        return (
+            <span>
+                <AdjacentClusterLink foundCluster={foundCluster} pathname={`/address/${address}`} />
+                <span className="align-middle">{labels['not-found']}</span>
+            </span>
+        );
+    }
+
+    return <span>{labels['not-found']}</span>;
+}
+
+async function probeAccount(url: string, address: string): Promise<boolean> {
+    const rpc = createSolanaRpc(url);
+    const { value } = await rpc.getAccountInfo(createAddress(address), { encoding: 'base64' }).send();
+
+    // RPC returns literal null when the account does not exist on that cluster
+    return value !== null;
 }

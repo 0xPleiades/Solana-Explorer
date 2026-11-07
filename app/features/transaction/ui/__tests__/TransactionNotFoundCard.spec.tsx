@@ -1,0 +1,128 @@
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { DEFAULT_SIGNATURE } from '@/app/__fixtures__/gen';
+import { rpcStub } from '@/app/__tests__/mock-rpc';
+import { useFirstAvailableBlock } from '@/app/providers/cluster';
+import { Cluster } from '@/app/utils/cluster';
+
+import { TransactionNotFoundCard } from '../TransactionNotFoundCard';
+
+vi.mock('@/app/providers/cluster', () => ({
+    useCluster: vi.fn(() => ({ cluster: Cluster.MainnetBeta })),
+    useFirstAvailableBlock: vi.fn(() => undefined),
+}));
+
+// Mock useClusterPath to return a simple path string
+vi.mock('@/app/utils/url', () => ({
+    useClusterPath: vi.fn(({ pathname }: { pathname: string }) => pathname),
+}));
+
+// Mock next/navigation
+vi.mock('next/navigation', () => ({
+    useSearchParams: vi.fn(() => new URLSearchParams()),
+}));
+
+// Mock createSolanaRpc: by default all clusters return null (not found)
+const mockSend = vi.fn().mockResolvedValue({ value: [null] });
+vi.mock('@solana/kit', async () => {
+    const actual = await vi.importActual<typeof import('@solana/kit')>('@solana/kit');
+    return {
+        ...actual,
+        createSolanaRpc: vi.fn(() => rpcStub({ getSignatureStatuses: mockSend })),
+    };
+});
+
+describe('TransactionNotFoundCard', () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ advanceTimeDelta: 1, shouldAdvanceTime: true });
+        vi.clearAllMocks();
+        mockSend.mockResolvedValue({ value: [null] });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('should render "Not Found" text', () => {
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+        expect(screen.getByText('Not Found')).toBeInTheDocument();
+    });
+
+    it('should render retry button when retry prop is provided', () => {
+        const retry = vi.fn();
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} retry={retry} />);
+        // Two buttons exist (desktop + mobile responsive), so use getAllByText
+        expect(screen.getAllByText('Try Again').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should not render retry button when retry prop is omitted', () => {
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+        expect(screen.queryByText('Try Again')).not.toBeInTheDocument();
+    });
+
+    it('should call retry callback when Try Again is clicked', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        const retry = vi.fn();
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} retry={retry} />);
+        const btn = screen.getAllByText('Try Again')[0];
+        await user.click(btn);
+        expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('should show the first available block note after the cluster search finds nothing', async () => {
+        mockSend.mockResolvedValue({ value: [null] });
+        vi.mocked(useFirstAvailableBlock).mockReturnValue(100n);
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+
+        // Advance past the 700ms sleep per cluster (3 clusters × 700ms)
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(3000);
+        });
+
+        await waitFor(() => {
+            expect(
+                screen.getByText('Note: Transactions processed before block 100 are not available at this time'),
+            ).toBeInTheDocument();
+        });
+    });
+
+    it('should not show the first available block note when the block is 0n', async () => {
+        mockSend.mockResolvedValue({ value: [null] });
+        vi.mocked(useFirstAvailableBlock).mockReturnValue(0n);
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(3000);
+        });
+
+        // Search is done, but 0n does not meet the > 0n condition
+        expect(screen.queryByText('Transactions processed before block', { exact: false })).not.toBeInTheDocument();
+    });
+
+    it('should show searching indicator while probing clusters', async () => {
+        // Keep send pending so the hook stays in "searching" state
+        mockSend.mockReturnValue(new Promise(() => {}));
+
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Transaction does not exist')).toBeInTheDocument();
+            expect(screen.getByText('checking', { exact: false })).toBeInTheDocument();
+        });
+    });
+
+    it('should show "Found on" link when transaction is found on another cluster', async () => {
+        // First call finds the signature (non-null result)
+        mockSend.mockResolvedValueOnce({
+            value: [{ confirmationStatus: 'finalized', confirmations: null, err: null, slot: 100 }],
+        });
+
+        render(<TransactionNotFoundCard signature={DEFAULT_SIGNATURE} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Found on', { exact: false })).toBeInTheDocument();
+        });
+    });
+});

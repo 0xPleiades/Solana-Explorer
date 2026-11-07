@@ -1,30 +1,36 @@
-import { Connection } from '@solana/web3.js';
+import { Domain, resolveDomain } from '@entities/domain/server';
 import { NextResponse } from 'next/server';
+import { is } from 'superstruct';
 
-import { MAINNET_BETA_URL } from '@/app/utils/cluster';
-import { getANSDomainInfo, getDomainInfo } from '@/app/utils/domain-info';
+import { Logger } from '@/app/shared/lib/logger';
 
 type Params = {
-    params: {
+    params: Promise<{
         domain: string;
-    };
+    }>;
 };
 
-export type FetchedDomainInfo = Awaited<ReturnType<typeof getDomainInfo>>;
+const CACHE_HEADERS = { 'Cache-Control': 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600' };
 
-export async function GET(_request: Request, { params: { domain } }: Params) {
-    // Intentionally using legacy web3js for compatibility with bonfida library
-    // This is an API route so won't affect client bundle
-    // We only fetch domains on mainnet
-    const connection = new Connection(MAINNET_BETA_URL);
-    const domainInfo = await (domain.substring(domain.length - 4) === '.sol'
-        ? getDomainInfo(domain, connection)
-        : getANSDomainInfo(domain, connection));
+const NO_CACHE_HEADERS = { 'Cache-Control': 'no-store' };
 
-    return NextResponse.json(domainInfo, {
-        headers: {
-            // 24 hours
-            'Cache-Control': 'max-age=86400',
-        },
-    });
+export async function GET(_request: Request, props: Params) {
+    const { domain } = await props.params;
+
+    if (!is(domain, Domain)) {
+        Logger.warn(`Invalid domain input rejected: ${domain}`);
+        return NextResponse.json(null, { headers: NO_CACHE_HEADERS, status: 400 });
+    }
+
+    try {
+        const domainInfo = await resolveDomain(domain);
+
+        return NextResponse.json(domainInfo, { headers: CACHE_HEADERS });
+    } catch (error) {
+        // RPC failure means the request fundamentally failed — escalate to Sentry.
+        Logger.panic(new Error('[api:domain-info] Failed to resolve domain', { cause: error }), {
+            sentryExtras: { domain },
+        });
+        return NextResponse.json(null, { headers: NO_CACHE_HEADERS, status: 500 });
+    }
 }

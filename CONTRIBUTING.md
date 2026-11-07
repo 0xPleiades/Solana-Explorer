@@ -1,8 +1,8 @@
 # Contributor's Guide
 
-Thank you for your interest in contributing to the Solana Explorer project! This guide will help you understand how to contribute effectively, including testing protocol integrations, ensuring CI/CD passes, and handling security-related features. 
+Thank you for your interest in contributing to the Solana Explorer project! This guide will help you understand how to contribute effectively, including testing protocol integrations, ensuring CI/CD passes, and reporting bugs and security vulnerabilities. 
 
-***Please do not submit one line PRs that upgrade CI workflows or dependencies unless they are related to bug fixes or performance improvements.*** If you have small changes you would like to see addressed, please file an issue instead. Thank you.
+*Please do not submit trivial drive-by PRs — copyright bumps, whitespace tweaks, single-character fixes, one-off CI workflow changes, or dependency upgrades — unless they fix a bug or improve performance.* If you have small changes you would like to see addressed, please file an issue instead. Thank you.
 
 ## Table of Contents
 
@@ -11,21 +11,32 @@ Thank you for your interest in contributing to the Solana Explorer project! This
 -   [Testing Protocol Integrations](#testing-protocol-integrations)
 -   [CI/CD Requirements](#cicd-requirements)
 -   [Bug Reporting](#bug-reporting)
+-   [AI Use](#ai-use)
 -   [Pull Request Process](#pull-request-process)
 
 ## Getting Started
 
 1. Fork the repository
 2. Clone your fork: `git clone https://github.com/YOUR-USERNAME/explorer.git`
-3. Install dependencies: `pnpm install`
+3. Install dependencies: `pnpm i --frozen-lockfile`
 4. Create a new branch for your feature: `git checkout -b feature/your-feature-name`
 
-> **Important Note**: We are currently not accepting PRs that add wallet adapter or similar functionality to the Explorer. Please check with maintainers before starting work on such features.
+> **Important Note**: Wallet connection is intentionally scoped to the interactive IDL feature (executing program instructions defined by Anchor or Codama IDLs). PRs that broaden wallet adapter usage, add new wallet-connected flows, or introduce general transaction-signing UI elsewhere will not be accepted. Please check with maintainers before starting related work.
 
 ## Development Environment
 
-Contributing to the Explorer requires `pnpm` version `9.10.0`.
-Once you have this version of `pnpm`, you can continue with the following steps.
+This project uses:
+
+-   Next.js 16.x (Turbopack)
+-   React 19.x
+-   TypeScript
+-   Vitest for testing
+-   pnpm as the package manager
+
+New components should use Tailwind for styling. Legacy SCSS under `app/scss/` (Dashkit theme) is being phased out — only modify it when changing existing components that still depend on it.
+
+Contributing to the Explorer requires the Node and `pnpm` versions declared in [`package.json`](./package.json) (`engines.node` and `packageManager`).
+Once you have these versions installed, you can continue with the following steps.
 
 -   Copy `.env.example` into `.env` & fill out the fields with custom RPC urls \
     from a Solana RPC provider. You should not use `https://api.mainnet-beta.solana.com` \
@@ -33,10 +44,8 @@ Once you have this version of `pnpm`, you can continue with the following steps.
     endpoints not suitable for application development. You must set these URLs with \
     endpoints from your own provider.
 
--   `pnpm i` \
-    Installs all project dependencies using pnpm package manager. This will create a \
-    `node_modules` directory and install all packages specified in `package.json`, \
-    including both dependencies and devDependencies.
+-   `pnpm i --frozen-lockfile` \
+    Installs project dependencies. Matches what CI runs — fails fast if `pnpm-lock.yaml` is out of date instead of silently updating it.
 
 -   `pnpm dev` \
     Runs the app in the development mode. \
@@ -45,35 +54,30 @@ Once you have this version of `pnpm`, you can continue with the following steps.
     The page will reload if you make edits. \
     You will also see any lint errors in the console.
 
--   (Optional) `pnpm test` \
-    Launches the test runner in the interactive watch mode.
+-   `pnpm test` \
+    Runs the Vitest suite once. Use `pnpm test:watch` for the interactive watch mode. \
+    A `.tsx` spec runs in jsdom and a `.ts` spec runs in node. Put `// @vitest-environment jsdom` on the first line of a `.ts` spec that renders or reads the DOM.
 
 ### Troubleshooting
 
 Still can't run the explorer with `pnpm dev`?
-Seeing sass dependency errors?
-Make sure you have `pnpm` version `9.10.0`, `git stash` your changes, then reset to master with `rm -rf node_modules && git reset --hard HEAD`. 
-Now running `pnpm i` followed by `pnpm dev` should work. If it is working, don't forget to reapply your changes with `git stash pop`.
-
-This project uses:
-
--   Next.js 14.x
--   React 18.x
--   TypeScript
--   Jest for testing
--   pnpm as the package manager
+Seeing dependency errors during install or first run?
+Make sure your `pnpm` version matches `packageManager` in `package.json`, `git stash` your changes, then reset to master with `rm -rf node_modules && git reset --hard HEAD`. 
+Now running `pnpm i --frozen-lockfile` followed by `pnpm dev` should work. If it is working, don't forget to reapply your changes with `git stash pop`.
 
 ## Testing Protocol Integrations
+
+For non-protocol changes, follow the test patterns near the file you're modifying (`__tests__/` next to the code). The remainder of this section covers the additional requirements for protocol integrations.
 
 When integrating new protocols or modifying existing ones, comprehensive testing is required to ensure the UI correctly displays protocol data.
 
 ### UI Testing Requirements
 
-For protocol integrations, tests must verify that the specific protocol data is correctly pinned on the UI by inspecting the rendered HTML. This approach is similar to what's implemented in the Lighthouse integration.
+For protocol integrations, tests must verify that the specific protocol data is correctly rendered in the UI by inspecting the rendered HTML. Mock external dependencies with `vi.mock` (Vitest); the Lighthouse suite below shows the pattern.
 
 #### Example: Lighthouse Test Suite
 
-The Lighthouse integration provides an excellent example of how to test protocol integrations. You can find the test suite at:
+The Lighthouse test suite at the path below illustrates the pattern:
 
 -   `app/components/instruction/lighthouse/__tests__/LighthouseDetailsCard.test.tsx`
 
@@ -125,24 +129,13 @@ Follow the pattern used in the Lighthouse integration by adding `data-testid` at
 </tr>
 ```
 
-### Testing Best Practices
-
-1. **Test Real-World Scenarios**: Use real transaction data examples when possible
-2. **Test Edge Cases**: Include tests for unusual or edge-case protocol data
-3. **Mock External Dependencies**: Use Jest's mocking capabilities for external services
-4. **Snapshot Testing**: Consider using snapshot tests for UI components to detect unintended changes
-
 ## CI/CD Requirements
 
 All contributions must pass CI/CD checks before requesting a review. The project uses GitHub Actions for continuous integration and deployment.
 
 ### CI Workflow
 
-The CI workflow (`ci.yaml`) runs on every pull request and includes:
-
--   Building the project
--   Running tests
--   Linting checks
+The CI workflow (`ci.yaml`) runs on every pull request and must pass before review. To reproduce the workflow locally without pushing, run it with [`act`](https://github.com/nektos/act).
 
 ### Requirements Before Requesting Review
 
@@ -166,9 +159,7 @@ pnpm test:ci
 
 ### Security Vulnerabilities
 
-For bugs relating to Solana Verify (aka Verified Builds), please send email to disclosures@solana.org.
-
-For other security vulnerabilities, please do NOT report them publicly on GitHub Issues. Instead, use our dedicated bug bounty form at [https://example.com/bug-bounty](https://example.com/bug-bounty).
+Please do NOT report security vulnerabilities publicly on GitHub Issues. Instead, email disclosures@solana.org — this includes bugs relating to Solana Verify (aka Verified Builds) as well as any other security issues.
 
 ### Non-Security Bugs
 
@@ -180,13 +171,35 @@ For non-security bugs, please use GitHub Issues with the following information:
 -   Screenshots if applicable
 -   Environment information (browser, OS, etc.)
 
+## AI Use
+
+You may use AI-assisted tools. Review the generated code, understand its behavior, and run the same checks expected of any other contribution.
+
+If you are building with AI on Solana, check out the [Solana Dev Skill](https://github.com/solana-foundation/solana-dev-skill) or the [Solana MCP](https://mcp.solana.com/) to aid in your work. The Explorer also serves its own MCP endpoint at [explorer.solana.com/mcp](https://explorer.solana.com/mcp) for inspecting on-chain entities. This repository ships [`AGENTS.md`](./AGENTS.md) and skills under [`.agents/skills/`](./.agents/skills/) that carry the repo's conventions, code style, and writing contract; point your tooling at them rather than rediscovering the codebase from scratch.
+
+Ensure that the generated code adheres to the project's coding standards and best practices. Maintainers can close PRs if they appear to be low-effort AI slop. In particular, audit your changes for the following AI code smells that increase maintenance burden:
+
+-   Comments that explain why the _previous_ behavior was wrong and the new behavior is correct. This can be helpful context for reviewers as a GitHub comment in the review, but we do not need a history of every code change living in the codebase.
+-   Large blocks of comments with a high density of technical jargon. Comments should be distilled to clearly explain _why_ this code is doing something (if it is not obvious), not _what_ (the code should speak for itself).
+-   Drive-by refactoring of code that is not relevant to the actual change being made.
+
+Be especially careful with AI-generated tests here. A test that asserts a protocol card renders is worthless if it would pass with an empty card. Assert the specific field values the card shows, as described in [Testing Protocol Integrations](#testing-protocol-integrations), and make sure the test fails when the parser returns wrong data.
+
+You must be able to explain every line of your diff without an LLM. Reviewers may ask a pointed question about any part of the change; if the answer is pasted from a model or does not come, the PR is closed.
+
+Tool attribution left in a PR (a `Generated with Claude Code` footer, a `Co-Authored-By: Claude` trailer, a `cursor/` or `codex/` branch, and the like) tells us the submission was opened without being read. Remove it before requesting review.
+
+### Communication
+
+When maintainers ask questions or suggest changes, do not relay the question to an LLM and paste its answer back. Distilling what the tool produced is what makes your contribution valuable.
+
 ## Pull Request Process
 
-1. Create a branch with a descriptive name (`feature/your-feature` or `fix/your-fix`)
+1. Create a branch with a descriptive name using a conventional prefix — `feat/...`, `fix/...`, `chore/...`, or `hotfix/...` (e.g. `feat/your-feature`)
 2. Make your changes, following the code style guidelines
 3. Add tests for your changes
-4. Ensure all tests pass locally
-5. Push your changes and create a pull request
-6. Wait for CI/CD to pass
-7. Include screenshots of protocol screens if applicable
-8. Request review ONLY after CI/CD has passed and screenshots have been uploaded
+4. Push your changes and create a pull request
+5. Fill in every applicable section of the pull request template; mark inapplicable sections as N/A or leave them blank
+6. Include screenshots — required for protocol screens, recommended for other UI changes
+7. Resolve every Greptile comment with a code fix or an explanation of why no change is needed
+8. Request review ONLY after CI/CD has passed, screenshots have been uploaded, and Greptile comments are resolved

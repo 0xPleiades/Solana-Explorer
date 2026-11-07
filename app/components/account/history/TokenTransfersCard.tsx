@@ -6,23 +6,30 @@ import { ErrorCard } from '@components/common/ErrorCard';
 import { LoadingCard } from '@components/common/LoadingCard';
 import { Signature } from '@components/common/Signature';
 import { TokenInstructionType, Transfer, TransferChecked } from '@components/instruction/token/types';
+import { type TransactionWithMeta } from '@entities/transaction-data';
+import { useFetchAccountHistory } from '@features/transaction-history/model/use-fetch-account-history';
 import { isTokenProgramData, useAccountHistory } from '@providers/accounts';
-import { useFetchAccountHistory } from '@providers/accounts/history';
 import { useScaledUiAmountForMint } from '@providers/accounts/tokens';
 import { FetchStatus } from '@providers/cache';
 import { useCluster } from '@providers/cluster';
-import { ParsedInstruction, ParsedTransactionWithMeta, PartiallyDecodedInstruction, PublicKey } from '@solana/web3.js';
+import { HistoryCardFooter, HistoryCardHeader } from '@shared/ui/HistoryCard';
+import { address as toAddress } from '@solana/kit';
+import { ParsedInstruction, PartiallyDecodedInstruction, PublicKey } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
 import { normalizeTokenAmount } from '@utils/index';
 import { InstructionContainer } from '@utils/instruction';
 import React, { useMemo } from 'react';
-import Moment from 'react-moment';
 import { create } from 'superstruct';
 import useSWR from 'swr';
 
+import { Badge } from '@/app/components/shared/ui/badge';
+import { Logger } from '@/app/shared/lib/logger';
+import { RelativeTime } from '@/app/shared/RelativeTime';
+import { Card } from '@/app/shared/ui/Card';
+import { BaseTable } from '@/app/shared/ui/Table';
 import { getTokenInfo, getTokenInfoSwrKey } from '@/app/utils/token-info';
 
-import { getTransactionRows, HistoryCardFooter, HistoryCardHeader } from '../HistoryCardComponents';
+import { getTransactionRows } from '../HistoryCardComponents';
 import { extractMintDetails, MintDetails } from './common';
 
 type IndexedTransfer = {
@@ -59,37 +66,43 @@ function TransferRow({
     const { signature, blockTime, statusText, statusClass, transfer, index, childIndex, amountString, units } = data;
     const [amountWithScaledUiAmountMultiplier, scaledUiAmountMultiplier] = useScaledUiAmountForMint(
         tokenAddress,
-        amountString
+        amountString,
     );
 
     return (
-        <tr key={signature + index + (childIndex || '')}>
-            <td>
-                <Signature signature={signature} link truncateChars={24} />
-            </td>
+        <BaseTable.Row key={signature + index + (childIndex || '')}>
+            <BaseTable.Cell>
+                <Signature signature={signature} link />
+            </BaseTable.Cell>
 
-            {hasTimestamps && <td className="text-muted">{blockTime && <Moment date={blockTime * 1000} fromNow />}</td>}
+            {hasTimestamps && (
+                <BaseTable.Cell className="text-dk-gray-700">
+                    {blockTime && <RelativeTime date={blockTime * 1000} />}
+                </BaseTable.Cell>
+            )}
 
-            <td>
-                <Address pubkey={transfer.source} link truncateChars={16} />
-            </td>
+            <BaseTable.Cell>
+                <Address pubkey={transfer.source} link />
+            </BaseTable.Cell>
 
-            <td>
-                <Address pubkey={transfer.destination} link truncateChars={16} />
-            </td>
+            <BaseTable.Cell>
+                <Address pubkey={transfer.destination} link />
+            </BaseTable.Cell>
 
-            <td>
+            <BaseTable.Cell>
                 {amountWithScaledUiAmountMultiplier} {units}
                 <ScaledUiAmountMultiplierTooltip
                     rawAmount={amountString}
                     scaledUiAmountMultiplier={scaledUiAmountMultiplier}
                 />
-            </td>
+            </BaseTable.Cell>
 
-            <td>
-                <span className={`badge bg-${statusClass}-soft`}>{statusText}</span>
-            </td>
-        </tr>
+            <BaseTable.Cell>
+                <Badge ui="dashkit" variant={statusClass as 'success' | 'warning'}>
+                    {statusText}
+                </Badge>
+            </BaseTable.Cell>
+        </BaseTable.Row>
     );
 }
 
@@ -98,8 +111,8 @@ export function TokenTransfersCard({ address }: { address: string }) {
     const pubkey = useMemo(() => new PublicKey(address), [address]);
     const history = useAccountHistory(address);
     const fetchAccountHistory = useFetchAccountHistory();
-    const refresh = () => fetchAccountHistory(pubkey, true, true);
-    const loadMore = () => fetchAccountHistory(pubkey, true);
+    const refresh = () => fetchAccountHistory(toAddress(address), true, true);
+    const loadMore = () => fetchAccountHistory(toAddress(address), true);
     const swrKey = useMemo(() => getTokenInfoSwrKey(address, cluster, url), [address, cluster, url]);
     const { data: tokenInfo, isLoading: tokenInfoLoading } = useSWR(swrKey, fetchTokenInfo);
 
@@ -117,7 +130,7 @@ export function TokenTransfersCard({ address }: { address: string }) {
     }, [address]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const { allTransfers, hasTimestamps } = React.useMemo(() => {
-        const detailedHistoryMap = history?.data?.transactionMap || new Map<string, ParsedTransactionWithMeta>();
+        const detailedHistoryMap = history?.data?.transactionMap || new Map<string, TransactionWithMeta>();
         const hasTimestamps = transactionRows.some(element => element.blockTime);
         const mintMap = new Map<string, MintDetails>();
         const allTransfers: TransferData[] = [];
@@ -235,41 +248,45 @@ export function TokenTransfersCard({ address }: { address: string }) {
 
     const fetching = history.status === FetchStatus.Fetching;
     return (
-        <div className="card">
-            <HistoryCardHeader fetching={fetching} refresh={() => refresh()} title="Token Transfers" />
-            <div className="table-responsive mb-0">
-                <table className="table table-sm table-nowrap card-table">
-                    <thead>
-                        <tr>
-                            <th className="text-muted">Transaction Signature</th>
-                            {hasTimestamps && <th className="text-muted">Age</th>}
-                            <th className="text-muted">Source</th>
-                            <th className="text-muted">Destination</th>
-                            <th className="text-muted">Amount</th>
-                            <th className="text-muted">Result</th>
-                        </tr>
-                    </thead>
-                    <tbody className="list">
-                        {allTransfers.map(transferData => (
-                            <TransferRow
-                                key={transferData.signature + transferData.index + (transferData.childIndex || '')}
-                                data={transferData}
-                                hasTimestamps={hasTimestamps}
-                                tokenAddress={pubkey.toBase58()}
-                            />
-                        ))}
-                    </tbody>
-                </table>
-            </div>
+        <Card ui="dashkit">
+            <HistoryCardHeader
+                fetching={fetching}
+                failed={history.status === FetchStatus.FetchFailed}
+                refresh={() => refresh()}
+                title="Token Transfers"
+                analyticsSection="token_transfers_header"
+            />
+            <BaseTable ui="dashkit" variant="card" nowrap>
+                <BaseTable.Head>
+                    <BaseTable.Row>
+                        <BaseTable.HeaderCell className="text-dk-gray-700">Transaction Signature</BaseTable.HeaderCell>
+                        {hasTimestamps && <BaseTable.HeaderCell className="text-dk-gray-700">Age</BaseTable.HeaderCell>}
+                        <BaseTable.HeaderCell className="text-dk-gray-700">Source</BaseTable.HeaderCell>
+                        <BaseTable.HeaderCell className="text-dk-gray-700">Destination</BaseTable.HeaderCell>
+                        <BaseTable.HeaderCell className="text-dk-gray-700">Amount</BaseTable.HeaderCell>
+                        <BaseTable.HeaderCell className="text-dk-gray-700">Result</BaseTable.HeaderCell>
+                    </BaseTable.Row>
+                </BaseTable.Head>
+                <BaseTable.Body>
+                    {allTransfers.map(transferData => (
+                        <TransferRow
+                            key={transferData.signature + transferData.index + (transferData.childIndex || '')}
+                            data={transferData}
+                            hasTimestamps={hasTimestamps}
+                            tokenAddress={pubkey.toBase58()}
+                        />
+                    ))}
+                </BaseTable.Body>
+            </BaseTable>
             <HistoryCardFooter fetching={fetching} foundOldest={history.data.foundOldest} loadMore={() => loadMore()} />
-        </div>
+        </Card>
     );
 }
 
 function getTransfer(
     instruction: ParsedInstruction | PartiallyDecodedInstruction,
     cluster: Cluster,
-    signature: string
+    signature: string,
 ): Transfer | TransferChecked | undefined {
     if ('parsed' in instruction && isTokenProgramData(instruction)) {
         try {
@@ -283,7 +300,7 @@ function getTransfer(
             }
         } catch (error) {
             if (cluster === Cluster.MainnetBeta) {
-                console.error(error, {
+                Logger.error(error, {
                     signature,
                 });
             }

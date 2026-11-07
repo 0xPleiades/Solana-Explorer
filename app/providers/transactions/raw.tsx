@@ -1,18 +1,18 @@
 'use client';
 
+import { fetchRawTransaction, type RawTransaction } from '@entities/transaction-data';
 import * as Cache from '@providers/cache';
 import { ActionType, FetchStatus } from '@providers/cache';
+import { useCacheEntry } from '@providers/cache-entry';
 import { useCluster } from '@providers/cluster';
-import { Connection, DecompileArgs, TransactionMessage, TransactionSignature, VersionedMessage } from '@solana/web3.js';
+import { type Finality, type TransactionSignature } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
 import React from 'react';
 
+import { Logger } from '@/app/shared/lib/logger';
+
 export interface Details {
-    raw?: {
-        transaction: TransactionMessage;
-        message: VersionedMessage;
-        signatures: string[];
-    } | null;
+    raw?: RawTransaction | null;
 }
 
 type State = Cache.State<Details>;
@@ -37,40 +37,39 @@ export function RawDetailsProvider({ children }: DetailsProviderProps) {
     );
 }
 
-export function useRawTransactionDetails(signature: TransactionSignature): Cache.CacheEntry<Details> | undefined {
+export function useRawTransactionDetails(
+    signature: TransactionSignature | undefined,
+): Cache.CacheEntry<Details> | undefined {
     const context = React.useContext(StateContext);
 
     if (!context) {
         throw new Error(`useRawTransactionDetails must be used within a TransactionsProvider`);
     }
 
-    return context.entries[signature];
+    return useCacheEntry(context.entries, signature);
 }
 
-async function fetchRawTransaction(dispatch: Dispatch, signature: TransactionSignature, cluster: Cluster, url: string) {
+async function loadRawTransaction(
+    dispatch: Dispatch,
+    signature: TransactionSignature,
+    cluster: Cluster,
+    url: string,
+    commitment?: Finality,
+) {
+    dispatch({
+        key: signature,
+        status: FetchStatus.Fetching,
+        type: ActionType.Update,
+        url,
+    });
+
     let fetchStatus;
     try {
-        const response = await new Connection(url).getTransaction(signature, {
-            maxSupportedTransactionVersion: 0,
-        });
+        const raw = await fetchRawTransaction(url, signature, commitment);
         fetchStatus = FetchStatus.Fetched;
 
-        let data: Details = { raw: null };
-        if (response !== null) {
-            const { message, signatures } = response.transaction;
-            const accountKeysFromLookups = response.meta?.loadedAddresses;
-            const decompileArgs: DecompileArgs | undefined = accountKeysFromLookups && { accountKeysFromLookups };
-            data = {
-                raw: {
-                    message,
-                    signatures,
-                    transaction: TransactionMessage.decompile(message, decompileArgs),
-                },
-            };
-        }
-
         dispatch({
-            data,
+            data: { raw },
             key: signature,
             status: fetchStatus,
             type: ActionType.Update,
@@ -78,8 +77,14 @@ async function fetchRawTransaction(dispatch: Dispatch, signature: TransactionSig
         });
     } catch (error) {
         if (cluster !== Cluster.Custom) {
-            console.error(error, { url });
+            Logger.error(error, { url });
         }
+        dispatch({
+            key: signature,
+            status: FetchStatus.FetchFailed,
+            type: ActionType.Update,
+            url,
+        });
     }
 }
 
@@ -91,9 +96,9 @@ export function useFetchRawTransaction() {
 
     const { cluster, url } = useCluster();
     return React.useCallback(
-        (signature: TransactionSignature) => {
-            url && fetchRawTransaction(dispatch, signature, cluster, url);
+        (signature: TransactionSignature, commitment?: Finality) => {
+            url && loadRawTransaction(dispatch, signature, cluster, url, commitment);
         },
-        [dispatch, cluster, url]
+        [dispatch, cluster, url],
     );
 }

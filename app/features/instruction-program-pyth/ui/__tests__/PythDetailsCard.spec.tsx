@@ -1,0 +1,138 @@
+import { toInstructionNode } from '@entities/instruction-card';
+import { createInstructionParserDispatcher, isParsedInstruction } from '@entities/instruction-parser';
+import {
+    PYTH_INSTRUCTION_TYPES,
+    PYTH_INSTRUCTIONS,
+    PYTH_ORACLE_PROGRAM_IDS,
+    type PythInstructionType,
+} from '@explorer/decoder-pyth';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { screen, waitFor } from '@testing-library/react';
+import { vi } from 'vitest';
+
+import { renderTxCard } from '@/app/__tests__/card-harness';
+
+import { pythInstructionParsers } from '../../lib/pyth-client';
+import { PythDetailsCard } from '../PythDetailsCard';
+
+vi.mock('next/navigation', () => import('@/app/__tests__/next-navigation'));
+
+const PROGRAM_ID = new PublicKey(PYTH_ORACLE_PROGRAM_IDS.mainnet);
+const PUBLISHER = new PublicKey('4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi');
+
+const KEYS = [
+    'FagABcRBhZH27JDtu6A1Jo9woXyoznP28QujLkxkN9Hj',
+    '7txXZZD6Um59YoLMF7XUNimbMjsqsWhc7g2EniiTrmp1',
+    'GgU1RSCbCTNfjPqBGnR7NBDZoLQwB7oEjnHqzGtcCLBH',
+].map(key => ({ isSigner: false, isWritable: false, pubkey: new PublicKey(key) }));
+
+const UNKNOWN_TITLE = 'Pyth: Unknown Instruction';
+
+const PRICE_UPDATE = [u32(1), u32(0), i64(-12345n), u64(678n), u64(170_640_000n)];
+const PRICE_ACCOUNT = [u32(0xffff_fff7), u32(1)];
+
+/** Real wire bytes per instruction, so a mis-keyed index routes to the wrong card and fails here. */
+const PAYLOADS: Record<PythInstructionType, number[][]> = {
+    AddMapping: [],
+    AddPrice: PRICE_ACCOUNT,
+    AddProduct: [],
+    AddPublisher: [[...PUBLISHER.toBytes()]],
+    AggregatePrice: [],
+    DeletePublisher: [[...PUBLISHER.toBytes()]],
+    InitMapping: [],
+    InitPrice: PRICE_ACCOUNT,
+    InitTest: [],
+    SetMinPublishers: [[3], [0, 0, 0]],
+    UpdatePrice: PRICE_UPDATE,
+    UpdatePriceNoFailOnError: PRICE_UPDATE,
+    UpdateProduct: [],
+    UpdateTest: [],
+};
+
+/** The two test instructions carry no payload, so they open on raw hex under their own name. */
+const RAW_ONLY: PythInstructionType[] = ['InitTest', 'UpdateTest'];
+
+const WITH_CARD = PYTH_INSTRUCTION_TYPES.filter(type => !RAW_ONLY.includes(type));
+
+const dispatcher = createInstructionParserDispatcher(pythInstructionParsers);
+
+describe('PythDetailsCard dispatch', () => {
+    it.each(WITH_CARD)('should render the %s card', async type => {
+        renderCard(pythInstruction(type));
+
+        await waitFor(() => {
+            expect(screen.getByText(`Pyth: ${PYTH_INSTRUCTIONS[type].name}`)).toBeInTheDocument();
+        });
+    });
+
+    it.each(RAW_ONLY)('should render %s as a raw-only card under its own name', async type => {
+        renderCard(pythInstruction(type));
+
+        await waitFor(() => {
+            expect(screen.getByText(`Pyth: ${PYTH_INSTRUCTIONS[type].name}`)).toBeInTheDocument();
+        });
+        expect(screen.queryByText(UNKNOWN_TITLE)).not.toBeInTheDocument();
+    });
+
+    it('should fall back on an unsupported version', async () => {
+        renderCard(rawInstruction([...u32(1), ...u32(0)]));
+
+        await waitFor(() => {
+            expect(screen.getByText(UNKNOWN_TITLE)).toBeInTheDocument();
+        });
+    });
+
+    it('should fall back on an index no instruction uses', async () => {
+        renderCard(rawInstruction([...u32(2), ...u32(14)]));
+
+        await waitFor(() => {
+            expect(screen.getByText(UNKNOWN_TITLE)).toBeInTheDocument();
+        });
+    });
+
+    it('should fall back on a payload too short for its instruction', async () => {
+        renderCard(rawInstruction([...u32(2), ...u32(PYTH_INSTRUCTIONS.AddPrice.index)]));
+
+        await waitFor(() => {
+            expect(screen.getByText(UNKNOWN_TITLE)).toBeInTheDocument();
+        });
+    });
+});
+
+function u32(value: number): number[] {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value, true);
+    return [...bytes];
+}
+
+function u64(value: bigint): number[] {
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setBigUint64(0, value, true);
+    return [...bytes];
+}
+
+function i64(value: bigint): number[] {
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setBigInt64(0, value, true);
+    return [...bytes];
+}
+
+function pythInstruction(type: PythInstructionType): TransactionInstruction {
+    return rawInstruction([...u32(2), ...u32(PYTH_INSTRUCTIONS[type].index), ...PAYLOADS[type].flat()]);
+}
+
+function rawInstruction(data: number[]): TransactionInstruction {
+    return new TransactionInstruction({ data: Buffer.from(data), keys: KEYS, programId: PROGRAM_ID });
+}
+
+function renderCard(raw: TransactionInstruction) {
+    const dispatched = dispatcher.fromTransactionInstruction(raw);
+    if (!dispatched) throw new Error('no Pyth parser registered for the mainnet deployment');
+
+    return renderTxCard(
+        <PythDetailsCard
+            node={toInstructionNode({ index: 0, ix: raw })}
+            parsed={isParsedInstruction(dispatched) ? dispatched.parsed : undefined}
+        />,
+    );
+}

@@ -1,3 +1,4 @@
+// TODO(fsd): relocate this module to @shared or the appropriate feature/entity layer.
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as React from 'react';
 
@@ -7,17 +8,72 @@ function TooltipProvider({ delayDuration = 0, ...props }: React.ComponentProps<t
     return <TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />;
 }
 
-function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+// Radix opens tooltips on hover/focus only, so on touch devices (which deliver neither) the tooltip is
+// unreachable. This context lets the trigger drive the tooltip's controlled open state on tap: the first
+// tap opens it and a second tap closes it, while hover and keyboard focus keep working unchanged on
+// desktop. Consumers can still control the tooltip themselves via `open`/`onOpenChange`.
+type TooltipContextValue = {
+    open: boolean;
+    setOpen: (open: boolean) => void;
+    wasOpenOnPointerDown: React.RefObject<boolean>;
+};
+const TooltipContext = React.createContext<TooltipContextValue | undefined>(undefined);
+
+function Tooltip({
+    open: openProp,
+    defaultOpen,
+    onOpenChange,
+    ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+    const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen ?? false);
+    const isControlled = openProp !== undefined;
+    const open = isControlled ? openProp : uncontrolledOpen;
+    // Captured on pointer-down (before Radix runs its own dismiss-on-press) so the click handler can tell
+    // an opening tap (was closed) from a dismissing tap (was already open).
+    const wasOpenOnPointerDown = React.useRef(false);
+
+    const setOpen = React.useCallback(
+        (next: boolean) => {
+            if (!isControlled) setUncontrolledOpen(next);
+            onOpenChange?.(next);
+        },
+        [isControlled, onOpenChange],
+    );
+
     return (
         <TooltipProvider>
-            <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+            <TooltipContext.Provider value={{ open, setOpen, wasOpenOnPointerDown }}>
+                <TooltipPrimitive.Root data-slot="tooltip" open={open} onOpenChange={setOpen} {...props} />
+            </TooltipContext.Provider>
         </TooltipProvider>
     );
 }
 
-function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-    return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
-}
+const TooltipTrigger = React.forwardRef<
+    React.ElementRef<typeof TooltipPrimitive.Trigger>,
+    React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Trigger>
+>(({ onPointerDown, onClick, ...props }, ref) => {
+    const ctx = React.useContext(TooltipContext);
+
+    return (
+        <TooltipPrimitive.Trigger
+            ref={ref}
+            data-slot="tooltip-trigger"
+            {...props}
+            onPointerDown={event => {
+                if (ctx) ctx.wasOpenOnPointerDown.current = ctx.open;
+                onPointerDown?.(event);
+            }}
+            onClick={event => {
+                onClick?.(event);
+                // Radix's own press handling already closes an open tooltip; we only need to force it open
+                // on a tap that found it closed (i.e. a touch tap, which never triggered a hover open).
+                if (ctx && !ctx.wasOpenOnPointerDown.current) ctx.setOpen(true);
+            }}
+        />
+    );
+});
+TooltipTrigger.displayName = 'TooltipTrigger';
 
 function TooltipContent({
     className,
@@ -31,13 +87,13 @@ function TooltipContent({
                 data-slot="tooltip-content"
                 sideOffset={sideOffset}
                 className={cn(
-                    'e-animate-in e-fade-in-0 e-zoom-in-95 data-[state=closed]:e-animate-out data-[state=closed]:e-fade-out-0 data-[state=closed]:e-zoom-out-95 data-[side=bottom]:e-slide-in-from-top-2 data-[side=left]:e-slide-in-from-right-2 data-[side=right]:e-slide-in-from-left-2 data-[side=top]:e-slide-in-from-bottom-2 e-origin-(--radix-tooltip-content-transform-origin) e-z-50 e-w-fit e-text-balance e-rounded-md e-bg-neutral-900 e-px-3 e-py-1.5 e-text-xs e-text-neutral-50 dark:e-bg-neutral-50 dark:e-text-neutral-900',
-                    className
+                    'origin-(--radix-tooltip-content-transform-origin) z-50 w-fit text-balance rounded-md bg-neutral-900 px-3 py-1.5 text-xs text-neutral-50 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+                    className,
                 )}
                 {...props}
             >
                 {children}
-                <TooltipPrimitive.Arrow className="e-fill-primary e-z-50 e-size-2.5 e-translate-y-[calc(-50%_-_2px)] e-rotate-0 e-rounded-[2px] e-fill-transparent dark:e-fill-neutral-50" />
+                <TooltipPrimitive.Arrow className="fill-primary z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-0 rounded-[2px] fill-transparent" />
             </TooltipPrimitive.Content>
         </TooltipPrimitive.Portal>
     );

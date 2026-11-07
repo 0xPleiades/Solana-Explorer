@@ -1,115 +1,72 @@
+import { useRefreshAccount } from '@entities/account';
+import { AccountCard } from '@features/account';
+import { Attestation as SasAttestation, Credential as SasCredential, Schema as SasSchema } from '@solana/attestation';
 import { SystemProgram } from '@solana/web3.js';
 import React from 'react';
-import { Attestation as SasAttestation, Credential as SasCredential, Schema as SasSchema } from 'sas-lib';
 
-import { AccountAddressRow, AccountHeader } from '@/app/components/common/Account';
+import { AccountAddressRow } from '@/app/components/common/Account';
 import { Address } from '@/app/components/common/Address';
-import { TableCardBody } from '@/app/components/common/TableCardBody';
-import { Account, useFetchAccountInfo } from '@/app/providers/accounts';
+import { Account } from '@/app/providers/accounts';
+import { type KeyValueRow, KeyValueRows, StackedList } from '@/app/shared/ui/key-value';
 import { decodeAccount } from '@/app/utils/attestation-service';
 import { decodeString, mapToPublicKey } from '@/app/utils/kit-wrapper';
 
 function SolanaCredentialCard({ credential }: { credential: SasCredential }) {
-    return (
-        <>
-            <tr>
-                <td>Credential Name</td>
-                <td className="text-lg-end">{decodeString(credential.name)}</td>
-            </tr>
-            <tr>
-                <td>Credential Authority</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(credential.authority)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Authorized Signers</td>
-                <td className="text-lg-end">
+    const rows: KeyValueRow[] = [
+        { label: 'Credential Name', value: decodeString(credential.name) },
+        { label: 'Credential Authority', value: <Address pubkey={mapToPublicKey(credential.authority)} raw link /> },
+        {
+            label: 'Authorized Signers',
+            value: (
+                <StackedList>
                     {credential.authorizedSigners.map((signer, idx) => (
-                        <Address key={idx} pubkey={mapToPublicKey(signer)} alignRight raw link />
+                        <li key={idx}>
+                            <Address pubkey={mapToPublicKey(signer)} raw link />
+                        </li>
                     ))}
-                </td>
-            </tr>
-        </>
-    );
+                </StackedList>
+            ),
+        },
+    ];
+
+    return <KeyValueRows rows={rows} />;
 }
 
 function SolanaSchemaCard({ schema }: { schema: SasSchema }) {
-    return (
-        <>
-            <tr>
-                <td>Schema Name</td>
-                <td className="text-lg-end">{decodeString(schema.name)}</td>
-            </tr>
-            <tr>
-                <td>Credential</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(schema.credential)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Description</td>
-                <td className="text-lg-end">{decodeString(schema.description)}</td>
-            </tr>
-            <tr>
-                <td>Is Paused</td>
-                <td className="text-lg-end">{schema.isPaused ? 'Yes' : 'No'}</td>
-            </tr>
-            <tr>
-                <td>Version</td>
-                <td className="text-lg-end">{schema.version}</td>
-            </tr>
-        </>
-    );
+    const rows: KeyValueRow[] = [
+        { label: 'Schema Name', value: schema.name },
+        { label: 'Credential', value: <Address pubkey={mapToPublicKey(schema.credential)} raw link /> },
+        { label: 'Description', value: schema.description },
+        { label: 'Is Paused', value: schema.isPaused ? 'Yes' : 'No' },
+        { label: 'Version', value: schema.version },
+    ];
+
+    return <KeyValueRows rows={rows} />;
 }
 
 function SolanaAttestationCard({ attestation }: { attestation: SasAttestation }) {
-    return (
-        <>
-            <tr>
-                <td>Nonce</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(attestation.nonce)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Credential</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(attestation.credential)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Schema</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(attestation.schema)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Signer</td>
-                <td className="text-lg-end">
-                    <Address pubkey={mapToPublicKey(attestation.signer)} alignRight raw link />
-                </td>
-            </tr>
-            <tr>
-                <td>Token Account</td>
-                <td className="text-lg-end">
-                    {attestation.tokenAccount.toString() === SystemProgram.programId.toBase58() ? (
-                        'Not Initialized'
-                    ) : (
-                        <Address pubkey={mapToPublicKey(attestation.tokenAccount)} alignRight raw link />
-                    )}
-                </td>
-            </tr>
-            <tr>
-                <td>Expiry</td>
-                <td className="text-lg-end">{Number(attestation.expiry)}</td>
-            </tr>
-        </>
-    );
+    const rows: KeyValueRow[] = [
+        { label: 'Nonce', value: <Address pubkey={mapToPublicKey(attestation.nonce)} raw link /> },
+        { label: 'Credential', value: <Address pubkey={mapToPublicKey(attestation.credential)} raw link /> },
+        { label: 'Schema', value: <Address pubkey={mapToPublicKey(attestation.schema)} raw link /> },
+        { label: 'Signer', value: <Address pubkey={mapToPublicKey(attestation.signer)} raw link /> },
+        {
+            label: 'Token Account',
+            value:
+                attestation.tokenAccount.toString() === SystemProgram.programId.toBase58() ? (
+                    'Not Initialized'
+                ) : (
+                    <Address pubkey={mapToPublicKey(attestation.tokenAccount)} raw link />
+                ),
+        },
+        { label: 'Expiry', value: Number(attestation.expiry) },
+    ];
+
+    return <KeyValueRows rows={rows} />;
 }
 
 export function SolanaAttestationServiceCard({ account }: { account: Account }) {
-    const refresh = useFetchAccountInfo();
+    const refresh = useRefreshAccount();
 
     const decoded = decodeAccount(account);
     let content = null;
@@ -131,12 +88,14 @@ export function SolanaAttestationServiceCard({ account }: { account: Account }) 
     }
 
     return (
-        <div className="card">
-            <AccountHeader title={title} refresh={() => refresh(account.pubkey, 'parsed')} />
-            <TableCardBody>
-                <AccountAddressRow account={account} />
-                {content}
-            </TableCardBody>
-        </div>
+        <AccountCard
+            title={title}
+            account={account}
+            analyticsSection="solana_attestation_service_section"
+            refresh={() => refresh(account.pubkey, 'parsed')}
+        >
+            <AccountAddressRow account={account} />
+            {content}
+        </AccountCard>
     );
 }

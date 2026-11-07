@@ -1,0 +1,156 @@
+import { renderHook } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { swrWrapper, waitForHook } from '@/app/__tests__/swr-hook';
+
+vi.mock('../../api/get-rpc', () => ({ getRpc: vi.fn() }));
+
+import { getRpc, type SolanaRpc } from '../../api/get-rpc';
+import { Cluster, clusterSelection, ClusterStatus, clusterUrl } from '../../lib/cluster';
+import { toConnectableUrl } from '../../lib/connectable-url';
+import { type ClusterState, StateContext } from '../cluster-provider';
+import { useClusterInfo, useEpochInfo, useEpochSchedule, useFirstAvailableBlock } from '../use-cluster-info';
+
+const EPOCH_INFO = { absoluteSlot: 100n, blockHeight: 90n, epoch: 5n, slotIndex: 10n, slotsInEpoch: 432_000n };
+const EPOCH_SCHEDULE = {
+    firstNormalEpoch: 0n,
+    firstNormalSlot: 0n,
+    leaderScheduleSlotOffset: 432_000n,
+    slotsPerEpoch: 432_000n,
+    warmup: false,
+};
+const FIRST_BLOCK = 42n;
+const EXPECTED_INFO = { epochInfo: EPOCH_INFO, epochSchedule: EPOCH_SCHEDULE };
+
+function mockRpc() {
+    return {
+        getEpochInfo: vi.fn().mockReturnValue({ send: () => Promise.resolve(EPOCH_INFO) }),
+        getEpochSchedule: vi.fn().mockReturnValue({ send: () => Promise.resolve(EPOCH_SCHEDULE) }),
+        getFirstAvailableBlock: vi.fn().mockReturnValue({ send: () => Promise.resolve(FIRST_BLOCK) }),
+        getGenesisHash: vi.fn().mockReturnValue({ send: () => Promise.resolve('hash') }),
+    };
+}
+
+let rpc: ReturnType<typeof mockRpc>;
+
+const connectedSelection = clusterSelection(Cluster.MainnetBeta);
+
+const connectedState: ClusterState = {
+    connectableUrl: toConnectableUrl(clusterUrl(connectedSelection)),
+    selection: connectedSelection,
+    status: ClusterStatus.Connected,
+};
+
+function makeWrapper(state: ClusterState) {
+    const SwrWrapper = swrWrapper({ dedupingInterval: 0 });
+    return function Wrapper({ children }: { children: ReactNode }) {
+        return createElement(SwrWrapper, null, createElement(StateContext.Provider, { value: state }, children));
+    };
+}
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    rpc = mockRpc();
+    vi.mocked(getRpc).mockReturnValue(rpc as unknown as SolanaRpc);
+});
+
+describe('useEpochSchedule', () => {
+    it('should fetch only the schedule', async () => {
+        const { result } = renderHook(() => useEpochSchedule(), { wrapper: makeWrapper(connectedState) });
+
+        await waitForHook(() => expect(result.current).toEqual(EPOCH_SCHEDULE));
+        expect(rpc.getEpochSchedule).toHaveBeenCalledTimes(1);
+        expect(rpc.getEpochInfo).not.toHaveBeenCalled();
+        expect(rpc.getFirstAvailableBlock).not.toHaveBeenCalled();
+        // getGenesisHash is the connection health check's job, not this hook's.
+        expect(rpc.getGenesisHash).not.toHaveBeenCalled();
+    });
+
+    it('should not fetch until the cluster is connected', () => {
+        const { result } = renderHook(() => useEpochSchedule(), {
+            wrapper: makeWrapper({ ...connectedState, status: ClusterStatus.Connecting }),
+        });
+
+        expect(result.current).toBeUndefined();
+        expect(getRpc).not.toHaveBeenCalled();
+    });
+
+    it('should not fetch when disabled', () => {
+        const { result } = renderHook(() => useEpochSchedule({ enabled: false }), {
+            wrapper: makeWrapper(connectedState),
+        });
+
+        expect(result.current).toBeUndefined();
+        expect(getRpc).not.toHaveBeenCalled();
+    });
+});
+
+describe('useEpochInfo', () => {
+    it('should fetch only the epoch info', async () => {
+        const { result } = renderHook(() => useEpochInfo(), { wrapper: makeWrapper(connectedState) });
+
+        await waitForHook(() => expect(result.current).toEqual(EPOCH_INFO));
+        expect(rpc.getEpochInfo).toHaveBeenCalledTimes(1);
+        expect(rpc.getEpochSchedule).not.toHaveBeenCalled();
+        expect(rpc.getFirstAvailableBlock).not.toHaveBeenCalled();
+    });
+
+    it('should not fetch when disabled', () => {
+        const { result } = renderHook(() => useEpochInfo({ enabled: false }), {
+            wrapper: makeWrapper(connectedState),
+        });
+
+        expect(result.current).toBeUndefined();
+        expect(getRpc).not.toHaveBeenCalled();
+    });
+});
+
+describe('useFirstAvailableBlock', () => {
+    it('should fetch only the first available block', async () => {
+        const { result } = renderHook(() => useFirstAvailableBlock(), { wrapper: makeWrapper(connectedState) });
+
+        await waitForHook(() => expect(result.current).toEqual(FIRST_BLOCK));
+        expect(rpc.getFirstAvailableBlock).toHaveBeenCalledTimes(1);
+        expect(rpc.getEpochSchedule).not.toHaveBeenCalled();
+        expect(rpc.getEpochInfo).not.toHaveBeenCalled();
+    });
+
+    it('should not fetch when disabled', () => {
+        const { result } = renderHook(() => useFirstAvailableBlock({ enabled: false }), {
+            wrapper: makeWrapper(connectedState),
+        });
+
+        expect(result.current).toBeUndefined();
+        expect(getRpc).not.toHaveBeenCalled();
+    });
+});
+
+describe('useClusterInfo', () => {
+    it('should compose both epoch values without fetching the first available block', async () => {
+        const { result } = renderHook(() => useClusterInfo(), { wrapper: makeWrapper(connectedState) });
+
+        await waitForHook(() => expect(result.current).toEqual(EXPECTED_INFO));
+        expect(rpc.getEpochSchedule).toHaveBeenCalledTimes(1);
+        expect(rpc.getEpochInfo).toHaveBeenCalledTimes(1);
+        expect(rpc.getFirstAvailableBlock).not.toHaveBeenCalled();
+    });
+
+    it('should stay undefined until both epoch values load', async () => {
+        rpc.getEpochInfo.mockReturnValue({ send: () => new Promise(() => {}) });
+
+        const { result } = renderHook(() => useClusterInfo(), { wrapper: makeWrapper(connectedState) });
+
+        await waitForHook(() => expect(rpc.getEpochSchedule).toHaveBeenCalledTimes(1));
+        expect(result.current).toBeUndefined();
+    });
+
+    it('should not fetch until the cluster is connected', () => {
+        const { result } = renderHook(() => useClusterInfo(), {
+            wrapper: makeWrapper({ ...connectedState, status: ClusterStatus.Connecting }),
+        });
+
+        expect(result.current).toBeUndefined();
+        expect(getRpc).not.toHaveBeenCalled();
+    });
+});

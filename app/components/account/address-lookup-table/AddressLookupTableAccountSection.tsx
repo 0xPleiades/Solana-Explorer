@@ -1,12 +1,14 @@
 import { Address } from '@components/common/Address';
 import { Slot } from '@components/common/Slot';
 import { SolBalance } from '@components/common/SolBalance';
-import { TableCardBody } from '@components/common/TableCardBody';
-import { Account, useFetchAccountInfo } from '@providers/accounts';
+import { useRefreshAccount } from '@entities/account';
+import { AccountCard } from '@features/account';
+import { Account } from '@providers/accounts';
 import { AddressLookupTableAccount } from '@solana/web3.js';
 import { AddressLookupTableAccountInfo } from '@validators/accounts/address-lookup-table';
 import React from 'react';
-import { RefreshCw } from 'react-feather';
+
+import { type KeyValueRow, KeyValueRows } from '@/app/shared/ui/key-value';
 
 export function AddressLookupTableAccountSection(
     params:
@@ -17,7 +19,7 @@ export function AddressLookupTableAccountSection(
         | {
               account: Account;
               lookupTableAccount: AddressLookupTableAccountInfo;
-          }
+          },
 ) {
     const account = params.account;
     const lookupTableState = React.useMemo(() => {
@@ -31,57 +33,44 @@ export function AddressLookupTableAccountSection(
         key: account.pubkey,
         state: lookupTableState,
     });
-    const refresh = useFetchAccountInfo();
-    return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Address Lookup Table Account</h3>
-                <button className="btn btn-white btn-sm" onClick={() => refresh(account.pubkey, 'parsed')}>
-                    <RefreshCw className="align-text-top me-2" size={13} />
-                    Refresh
-                </button>
-            </div>
+    const refresh = useRefreshAccount();
 
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Balance (SOL)</td>
-                    <td className="text-lg-end text-uppercase">
-                        <SolBalance lamports={account.lamports} />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Activation Status</td>
-                    <td className="text-lg-end text-uppercase">
-                        {lookupTableAccount.isActive() ? 'Active' : 'Deactivated'}
-                    </td>
-                </tr>
-                <tr>
-                    <td>Last Extended Slot</td>
-                    <td className="text-lg-end">
-                        {lookupTableAccount.state.lastExtendedSlot === 0 ? (
-                            'None (Empty)'
-                        ) : (
-                            <Slot slot={lookupTableAccount.state.lastExtendedSlot} link />
-                        )}
-                    </td>
-                </tr>
-                <tr>
-                    <td>Authority</td>
-                    <td className="text-lg-end">
-                        {lookupTableAccount.state.authority === undefined ? (
-                            'None (Frozen)'
-                        ) : (
-                            <Address pubkey={lookupTableAccount.state.authority} alignRight link />
-                        )}
-                    </td>
-                </tr>
-            </TableCardBody>
-        </div>
+    const rows: KeyValueRow[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        { label: 'Balance (SOL)', value: <SolBalance lamports={account.lamports} />, valueClassName: 'uppercase' },
+        {
+            label: 'Activation Status',
+            value: lookupTableAccount.isActive() ? 'Active' : 'Deactivated',
+            valueClassName: 'uppercase',
+        },
+        {
+            label: 'Last Extended Slot',
+            value:
+                lookupTableAccount.state.lastExtendedSlot === 0 ? (
+                    'None (Empty)'
+                ) : (
+                    <Slot slot={lookupTableAccount.state.lastExtendedSlot} link />
+                ),
+        },
+        {
+            label: 'Authority',
+            value:
+                lookupTableAccount.state.authority === undefined ? (
+                    'None (Frozen)'
+                ) : (
+                    <Address pubkey={lookupTableAccount.state.authority} link />
+                ),
+        },
+    ];
+
+    return (
+        <AccountCard
+            title="Address Lookup Table Account"
+            account={account}
+            analyticsSection="address_lookup_table_section"
+            refresh={() => refresh(account.pubkey, 'parsed')}
+        >
+            <KeyValueRows rows={rows} />
+        </AccountCard>
     );
 }

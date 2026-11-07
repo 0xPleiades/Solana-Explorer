@@ -1,15 +1,16 @@
 import { useCallback, useMemo } from 'react';
 
 import { useTokenExtensionNavigation } from '@/app/features/token-extensions/use-token-extension-navigation';
+import { KeyValue } from '@/app/shared/ui/key-value';
 import { populatePartialParsedTokenExtension } from '@/app/utils/token-extension';
 import { TokenExtension } from '@/app/validators/accounts/token-extension';
 
-import { TokenExtensionBadges } from '../../common/TokenExtensionBadges';
 import { ParsedTokenExtension } from '../types';
+import { TokenExtensionBadges } from './TokenExtensionBadges';
 
 export function TokenExtensionsStatusRow({ address, extensions }: { address: string; extensions: TokenExtension[] }) {
     const extension = useTokenExtensionNavigation({ uriComponent: `/address/${address}` });
-    // bypass root uriComponent to not play guessing inside the compoent as Row might be rendered at different pages
+    // bypass root uriComponent to not play guessing inside the component as Row might be rendered at different pages
 
     const parsedExtensions = useMemo(() => {
         return extensions.reduce((acc, ext) => {
@@ -27,15 +28,12 @@ export function TokenExtensionsStatusRow({ address, extensions }: { address: str
         (ext: { extensionName: TokenExtension['extension'] }) => {
             extension.navigateToExtension(ext.extensionName);
         },
-        [extension]
+        [extension],
     );
 
     return (
-        <tr>
-            <td>Extensions</td>
-            <td className="text-lg-end">
-                <TokenExtensionBadges className="lg:e-justify-end" extensions={parsedExtensions} onClick={onClick} />
-            </td>
-        </tr>
+        <KeyValue label="Extensions">
+            <TokenExtensionBadges extensions={parsedExtensions} onClick={onClick} />
+        </KeyValue>
     );
 }

@@ -1,0 +1,204 @@
+'use client';
+
+import { Tooltip, TooltipContent, TooltipTrigger } from '@components/shared/ui/tooltip';
+import { cn } from '@components/shared/utils';
+import {
+    FormattedIdl,
+    getIdlStandard,
+    isIdlProgramIdMismatch,
+    isInteractiveIdlSupported,
+    type SupportedIdl,
+} from '@entities/idl';
+import { isEnvEnabled } from '@utils/env';
+import React, { useMemo } from 'react';
+import { PlayCircle, XCircle } from 'react-feather';
+
+import { BaseWarningCard } from '@/app/shared/ui/WarningCard';
+
+import { BaseIdlAccounts } from '../formatted-idl/ui/BaseIdlAccounts';
+import { BaseIdlConstants } from '../formatted-idl/ui/BaseIdlConstants';
+import { BaseIdlErrors } from '../formatted-idl/ui/BaseIdlErrors';
+import { BaseIdlEvents } from '../formatted-idl/ui/BaseIdlEvents';
+import { BaseIdlInstructions } from '../formatted-idl/ui/BaseIdlInstructions';
+import { BaseIdlPdas } from '../formatted-idl/ui/BaseIdlPdas';
+import { BaseIdlTypes } from '../formatted-idl/ui/BaseIdlTypes';
+import type { FormattedIdlDataView, IdlDataKeys } from '../formatted-idl/ui/types';
+import { createIdlAnalytics } from '../interactive-idl/lib/analytics';
+import { InteractWithIdl } from '../interactive-idl/ui/InteractWithIdl';
+
+const IS_INTERACTIVE_IDL_ENABLED = isEnvEnabled(process.env.NEXT_PUBLIC_INTERACTIVE_IDL_ENABLED);
+
+type TabId = 'instructions' | 'accounts' | 'types' | 'errors' | 'constants' | 'events' | 'pdas';
+
+export type DataTab<K extends IdlDataKeys = IdlDataKeys> = {
+    id: TabId;
+    title: React.ReactNode;
+    disabled: boolean;
+    render: () => React.ReactElement<FormattedIdlDataView<K>>;
+};
+
+export type InteractTab = {
+    id: 'interact';
+    title: string | React.ReactNode;
+    disabled: boolean;
+    render: () => ReturnType<typeof InteractWithIdl>;
+};
+
+type Tab = DataTab | InteractTab;
+
+export function useTabs(idl: FormattedIdl | null, originalIdl: SupportedIdl, programId?: string, searchStr?: string) {
+    const tabs: Tab[] = useMemo(() => {
+        if (!idl) return [];
+
+        const hasSearch = Boolean(searchStr?.trim());
+
+        const createTabRenderer = <K extends IdlDataKeys>(
+            Component: React.ComponentType<FormattedIdlDataView<K>>,
+            data: FormattedIdl[K] | undefined,
+            tabName: string,
+        ) => {
+            const TabRenderer = () => {
+                if (hasSearch && (!data || data.length === 0)) {
+                    return <NoSearchResultsPlaceholder tabName={tabName} />;
+                }
+                return <Component data={data} />;
+            };
+            TabRenderer.displayName = `TabRenderer(${tabName})`;
+            return TabRenderer;
+        };
+
+        const tabItems: Tab[] = [
+            {
+                disabled: !idl.instructions,
+                id: 'instructions',
+                render: createTabRenderer(BaseIdlInstructions, idl.instructions, 'instructions'),
+                title: <TabTitle baseTitle="Instructions" data={idl.instructions} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.accounts?.length,
+                id: 'accounts',
+                render: createTabRenderer(BaseIdlAccounts, idl.accounts, 'accounts'),
+                title: <TabTitle baseTitle="Accounts" data={idl.accounts} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.types?.length,
+                id: 'types',
+                render: createTabRenderer(BaseIdlTypes, idl.types, 'types'),
+                title: <TabTitle baseTitle="Types" data={idl.types} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.pdas?.length,
+                id: 'pdas',
+                render: createTabRenderer(BaseIdlPdas, idl.pdas, 'pdas'),
+                title: <TabTitle baseTitle="PDAs" data={idl.pdas} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.errors?.length,
+                id: 'errors',
+                render: createTabRenderer(BaseIdlErrors, idl.errors, 'errors'),
+                title: <TabTitle baseTitle="Errors" data={idl.errors} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.constants?.length,
+                id: 'constants',
+                render: createTabRenderer(BaseIdlConstants, idl.constants, 'constants'),
+                title: <TabTitle baseTitle="Constants" data={idl.constants} searchStr={searchStr} />,
+            },
+            {
+                disabled: !idl.events?.length,
+                id: 'events',
+                render: createTabRenderer(BaseIdlEvents, idl.events, 'events'),
+                title: <TabTitle baseTitle="Events" data={idl.events} searchStr={searchStr} />,
+            },
+        ];
+
+        // Show interactive tab for modern Anchor IDLs and Codama IDLs
+        if (originalIdl && isInteractiveIdlSupported(originalIdl) && IS_INTERACTIVE_IDL_ENABLED) {
+            const isProgramIdMismatch = programId ? isIdlProgramIdMismatch(originalIdl, programId) : false;
+            // Analytics is created during runtime because GA events are scoped to the IDL standard (Anchor | Codama).
+            const idlAnalytics = createIdlAnalytics(getIdlStandard(originalIdl));
+
+            tabItems.push({
+                disabled: !idl.instructions?.length,
+                id: 'interact',
+                render: () =>
+                    isProgramIdMismatch ? (
+                        <BaseWarningCard message="IDL program address does not match the current program" />
+                    ) : (
+                        <InteractWithIdl
+                            data={idl.instructions}
+                            onSectionsExpanded={idlAnalytics.trackSectionsExpanded}
+                            onTabOpened={idlAnalytics.trackTabOpened}
+                            onTransactionConfirmed={idlAnalytics.trackTransactionConfirmed}
+                            onTransactionFailed={idlAnalytics.trackTransactionFailed}
+                            onTransactionSimulationStart={idlAnalytics.trackTransactionSimulated}
+                            onTransactionExecutionStart={idlAnalytics.trackTransactionSubmitted}
+                            onWalletConnected={idlAnalytics.trackWalletConnected}
+                        />
+                    ),
+                title: <InteractWithIdlTabName isProgramIdMismatch={isProgramIdMismatch} />,
+            } as InteractTab);
+        }
+
+        return tabItems;
+    }, [idl, originalIdl, programId, searchStr]);
+
+    return tabs;
+}
+
+type TabTitleProps = {
+    baseTitle: string;
+    data: unknown[] | undefined;
+    searchStr?: string;
+};
+
+function TabTitle({ baseTitle, data, searchStr }: TabTitleProps) {
+    const hasSearch = Boolean(searchStr?.trim());
+    const count = data?.length;
+    if (hasSearch && count !== undefined) {
+        return (
+            <>
+                {baseTitle} <span className="font-mono text-xs">{`(${count})`}</span>
+            </>
+        );
+    }
+    return <>{baseTitle}</>;
+}
+
+function NoSearchResultsPlaceholder({ tabName }: { tabName: string }) {
+    return (
+        <div className="flex items-center justify-center py-6 text-center">
+            <p className="m-0 text-sm text-neutral-500">No {tabName.toLowerCase()} found</p>
+        </div>
+    );
+}
+
+function InteractWithIdlTabName({ isProgramIdMismatch = false }: { isProgramIdMismatch?: boolean }) {
+    const tab = (
+        <div className="flex items-center gap-1">
+            {isProgramIdMismatch ? <XCircle size={14} /> : <PlayCircle size={14} />}
+            Interact
+        </div>
+    );
+
+    const tooltipMessage = isProgramIdMismatch
+        ? 'IDL program address does not match the current program'
+        : 'Launch program instructions';
+
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <div
+                    className={cn('w-fit', {
+                        'cursor-not-allowed opacity-50': isProgramIdMismatch,
+                    })}
+                >
+                    {tab}
+                </div>
+            </TooltipTrigger>
+            <TooltipContent>
+                <div className="min-w-36 max-w-16">{tooltipMessage}</div>
+            </TooltipContent>
+        </Tooltip>
+    );
+}

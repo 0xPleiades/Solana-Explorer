@@ -1,0 +1,258 @@
+/* eslint-disable no-restricted-syntax -- storybook play functions use RegExp for pattern matching */
+import type { Meta, StoryObj } from '@storybook-config/types';
+import { toast as sonnerToast } from 'sonner';
+import { expect, fn, within } from 'storybook/test';
+
+import { Button } from '../button';
+import { CustomToast } from './custom';
+import { Toaster } from './toaster';
+
+const meta = {
+    component: CustomToast,
+    decorators: [
+        Story => (
+            <div>
+                <Toaster position="bottom-center" toastOptions={{ duration: 5_000 }} />
+                <Story />
+            </div>
+        ),
+    ],
+    parameters: {
+        // Centers the trigger button + inline preview in the canvas so they're immediately visible.
+        layout: 'centered',
+    },
+    tags: ['autodocs', 'test'],
+    title: 'Components/Shared/Sonner/CustomToast',
+} satisfies Meta<typeof CustomToast>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Success: Story = {
+    args: {
+        description: 'Connected to wallet X5s...GnDZ',
+        id: 'success-toast',
+        title: 'Wallet Connected',
+        type: 'success',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText('Wallet Connected');
+        expect(title).toBeInTheDocument();
+
+        const description = await canvas.findByText('Connected to wallet X5s...GnDZ');
+        expect(description).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => (
+        <div className="flex flex-col items-center gap-4">
+            <CustomToast {...args} />
+            <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                    sonnerToast.custom(id => <CustomToast {...args} id={id} />);
+                }}
+            >
+                Show Success Toast
+            </Button>
+        </div>
+    ),
+};
+
+export const Error: Story = {
+    args: {
+        description: 'Unable to process transaction. Please try again.',
+        id: 'error-toast',
+        title: 'Transaction Failed',
+        type: 'error',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText('Transaction Failed');
+        expect(title).toBeInTheDocument();
+
+        const description = await canvas.findByText('Unable to process transaction. Please try again.');
+        expect(description).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => (
+        <div className="flex flex-col items-center gap-4">
+            <CustomToast {...args} />
+            <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                    sonnerToast.custom(id => <CustomToast {...args} id={id} />);
+                }}
+            >
+                Show Error Toast
+            </Button>
+        </div>
+    ),
+};
+
+export const Info: Story = {
+    args: {
+        description: 'Your transaction is being confirmed on the blockchain.',
+        id: 'info-toast',
+        title: 'Processing Transaction',
+        type: 'info',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText('Processing Transaction');
+        expect(title).toBeInTheDocument();
+
+        const description = await canvas.findByText('Your transaction is being confirmed on the blockchain.');
+        expect(description).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => (
+        <div className="flex flex-col items-center gap-4">
+            <CustomToast {...args} />
+            <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                    sonnerToast.custom(id => <CustomToast {...args} id={id} />);
+                }}
+            >
+                Show Info Toast
+            </Button>
+        </div>
+    ),
+};
+
+export const WithLongTitle: Story = {
+    args: {
+        description:
+            'This toast demonstrates how the component handles a very long title that may wrap to multiple lines.',
+        id: 'long-title-toast',
+        title: 'This is a very long title that demonstrates how the toast component handles text wrapping when the title exceeds the available width',
+        type: 'info',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText(/This is a very long title/);
+        expect(title).toBeInTheDocument();
+
+        const description = await canvas.findByText(/This toast demonstrates/);
+        expect(description).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => (
+        <div className="flex flex-col items-center gap-4">
+            <CustomToast {...args} />
+            <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                    sonnerToast.custom(id => <CustomToast {...args} id={id} />);
+                }}
+            >
+                Show Toast with Long Title
+            </Button>
+        </div>
+    ),
+};
+
+export const WithoutDescription: Story = {
+    args: {
+        id: 'no-description-toast',
+        title: 'Action Completed',
+        type: 'success',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText('Action Completed');
+        expect(title).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => (
+        <div className="flex flex-col items-center gap-4">
+            <CustomToast {...args} />
+            <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                    sonnerToast.custom(id => <CustomToast {...args} id={id} />);
+                }}
+            >
+                Show Toast without Description
+            </Button>
+        </div>
+    ),
+};
+
+export const WithCustomDescription: Story = {
+    args: {
+        description: '',
+        id: 'reactnode-toast',
+        title: 'Transaction Complete',
+        type: 'success',
+    },
+    async play({ canvasElement }) {
+        const canvas = within(canvasElement);
+
+        const title = await canvas.findByText('Transaction Complete');
+        expect(title).toBeInTheDocument();
+
+        const signature = await canvas.findByText(/Transaction signature:/);
+        expect(signature).toBeInTheDocument();
+
+        const link = await canvas.findByText('View on Explorer');
+        expect(link).toBeInTheDocument();
+
+        const closeButton = canvas.getAllByRole('button');
+        expect(closeButton.length).toBeGreaterThan(0);
+    },
+    render: args => {
+        const onViewTransaction = fn();
+        const description = (
+            <div className="text-xs text-neutral-300">
+                <p className="mb-1">Transaction signature: 5X5s...GnDZ</p>
+                <a
+                    href="#"
+                    className="text-indigo-400 underline hover:text-indigo-300"
+                    onClick={e => {
+                        e.preventDefault();
+                        onViewTransaction();
+                    }}
+                >
+                    View on Explorer
+                </a>
+            </div>
+        );
+
+        return (
+            <div className="flex flex-col items-center gap-4">
+                <CustomToast {...args} description={description} />
+                <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                        sonnerToast.custom(id => <CustomToast {...args} id={id} description={description} />);
+                    }}
+                >
+                    Show Toast with ReactNode Description
+                </Button>
+            </div>
+        );
+    },
+};

@@ -1,50 +1,47 @@
 import { SolBalance } from '@components/common/SolBalance';
+import { RefreshButton } from '@components/shared/ui/refresh-button';
 import { Account } from '@providers/accounts';
 import React from 'react';
-import { RefreshCw } from 'react-feather';
+
+import { CardHeader, CardTitle } from '@/app/shared/ui/Card';
+import { KeyValue } from '@/app/shared/ui/key-value';
 
 import { Address } from './Address';
 
 type AccountHeaderProps = {
     title: string;
+    analyticsSection: string;
     refresh: () => void;
+    fetching?: boolean;
 };
 
 type AccountProps = {
     account: Account;
 };
 
-export function AccountHeader({ title, refresh }: AccountHeaderProps) {
+export function AccountHeader({ title, analyticsSection, refresh, fetching }: AccountHeaderProps) {
     return (
-        <div className="card-header align-items-center">
-            <h3 className="card-header-title">{title}</h3>
-            <button className="btn btn-white btn-sm" onClick={() => refresh()}>
-                <RefreshCw className="align-text-top me-2" size={13} />
-                Refresh
-            </button>
-        </div>
+        <CardHeader ui="dashkit">
+            <CardTitle as="h3" ui="dashkit">
+                {title}
+            </CardTitle>
+            <RefreshButton analyticsSection={analyticsSection} onClick={refresh} fetching={fetching} />
+        </CardHeader>
     );
 }
 
 export function AccountAddressRow({ account }: AccountProps) {
     return (
-        <tr>
-            <td>Address</td>
-            <td className="text-lg-end">
-                <Address pubkey={account.pubkey} alignRight raw />
-            </td>
-        </tr>
+        <KeyValue label="Address">
+            <Address pubkey={account.pubkey} raw />
+        </KeyValue>
     );
 }
 
 export function AccountBalanceRow({ account }: AccountProps) {
-    const { lamports } = account;
     return (
-        <tr>
-            <td>Balance (SOL)</td>
-            <td className="text-lg-end text-uppercase">
-                <SolBalance lamports={lamports} />
-            </td>
-        </tr>
+        <KeyValue label="Balance (SOL)" valueClassName="uppercase">
+            <SolBalance lamports={account.lamports} />
+        </KeyValue>
     );
 }

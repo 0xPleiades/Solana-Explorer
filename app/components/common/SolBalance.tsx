@@ -8,9 +8,5 @@ export function SolBalance({
     lamports: number | bigint;
     maximumFractionDigits?: number;
 }) {
-    return (
-        <span>
-            ◎<span className="font-monospace">{lamportsToSolString(lamports, maximumFractionDigits)}</span>
-        </span>
-    );
+    return <span className="font-mono">◎{lamportsToSolString(lamports, maximumFractionDigits)}</span>;
 }

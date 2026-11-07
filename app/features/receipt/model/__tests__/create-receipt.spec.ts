@@ -1,0 +1,764 @@
+import { truncateAddress } from '@entities/address';
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import { ASSOCIATED_TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { Cluster } from '@/app/utils/cluster';
+
+import { getTokenInfo } from '../../api/get-token-info';
+import { getTx } from '../../api/get-tx';
+import { MULTISIG_AUTHORITY, RECEIVER, RECEIVER_2, SENDER } from '../../mocks/addresses';
+import { mockCustomFeePayerTransaction } from '../../mocks/custom-fee-payer';
+import { mockJitoOnlyTransferTransaction } from '../../mocks/jito-only-transfer';
+import { mockMixedMintTransfersTransaction } from '../../mocks/mixed-mint-transfers';
+import { mockMultipleTransfersTransaction } from '../../mocks/multiple-transfers';
+import { mockNoTransferTransaction } from '../../mocks/no-transfers';
+import { mockSingleTransferTransaction } from '../../mocks/single-transfer';
+import { mockToken2022TransferTransaction } from '../../mocks/token-2022-transfer';
+import { mockToken2022Transfer2Transaction } from '../../mocks/token-2022-transfer2';
+import { mockUsdcTransferTransaction } from '../../mocks/usdc-checked-transfer';
+import { mockUsdcFpPrecisionTransfersTransaction } from '../../mocks/usdc-fp-precision-transfers';
+import { mockUsdcJitoTransferTransaction } from '../../mocks/usdc-jito-transfer';
+import {
+    mockUsdcMultipleTransfersAddresses,
+    mockUsdcMultipleTransfersTransaction,
+} from '../../mocks/usdc-multiple-transfers';
+import { mockUsdcMultisigTransferTransaction } from '../../mocks/usdc-multisig-transfer';
+import { mockUsdcRegularTransferTransaction } from '../../mocks/usdc-regular-transfer';
+import { mockZeroTransferTransaction } from '../../mocks/zero-transfer';
+import {
+    buildInnerGroup,
+    buildParsedTransaction,
+    buildPartiallyDecodedIx,
+    buildSolTransferIx,
+    buildSolTransferWithSeedIx,
+    buildTokenTransferCheckedIx,
+} from '../__fixtures__/builders';
+import { createReceipt } from '../create-receipt';
+import { type ReceiptResult } from '../receipt-data';
+
+vi.mock('../../api/get-tx');
+vi.mock('../../api/get-token-info');
+
+function unwrap(result: ReceiptResult) {
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') throw new Error(`expected ok, got unavailable: ${result.reason}`);
+    return result.receipt;
+}
+
+describe('createReceipt', () => {
+    const mockSignature = '5yKzCuw1e9d58HcnzSL31cczfXUux2H4Ga5TAR2RcQLE5W8BiTAC9x9MvhLtc4h99sC9XxLEAjhrXyfKezdMkZFV';
+
+    beforeEach(() => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        vi.clearAllMocks();
+    });
+
+    describe('SOL transfer receipts', () => {
+        it('should create a formatted SOL transfer receipt for a single transfer', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockSingleTransferTransaction,
+            });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                network: 'Mainnet Beta',
+                receiver: {
+                    truncated: truncateAddress(RECEIVER.publicKey.toBase58(), 5),
+                },
+                sender: {
+                    truncated: truncateAddress(SENDER.publicKey.toBase58(), 5),
+                },
+                total: {
+                    formatted: '0.3',
+                    raw: 300000000,
+                    unit: 'SOL',
+                },
+            });
+            expect(receipt.date).toBeDefined();
+            expect(receipt.date.timestamp).toBeDefined();
+            expect(receipt.date.utc).toBeDefined();
+        });
+
+        it('should create a formatted SOL receipt for multiple transfers', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockMultipleTransfersTransaction,
+            });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                kind: 'sol',
+                total: { formatted: '0.14', raw: 140000000, unit: 'SOL' },
+                transfers: [
+                    {
+                        amount: { formatted: '0.08', raw: 80000000, unit: 'SOL' },
+                        receiver: { address: RECEIVER.publicKey.toBase58() },
+                        sender: { address: SENDER.publicKey.toBase58() },
+                    },
+                    {
+                        amount: { formatted: '0.05', raw: 50000000, unit: 'SOL' },
+                        receiver: { address: RECEIVER_2.publicKey.toBase58() },
+                        sender: { address: SENDER.publicKey.toBase58() },
+                    },
+                    {
+                        amount: { formatted: '0.01', raw: 10000000, unit: 'SOL' },
+                        receiver: { address: RECEIVER.publicKey.toBase58() },
+                        sender: { address: SENDER.publicKey.toBase58() },
+                    },
+                ],
+            });
+        });
+
+        it('should handle custom fee payer transaction', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockCustomFeePayerTransaction,
+            });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.00001',
+                    raw: 10000,
+                },
+                receiver: {
+                    truncated: 'G2Gjo..N6wid',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '0.5',
+                    raw: 500000000,
+                    unit: 'SOL',
+                },
+            });
+        });
+
+        it('should format receipt for different clusters', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.Devnet,
+                transaction: mockSingleTransferTransaction,
+            });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                network: 'Devnet',
+            });
+        });
+
+        it('should create SOL receipt for the tip when transaction has USDC transferChecked and Jito SOL tip', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.Devnet,
+                transaction: mockUsdcJitoTransferTransaction,
+            });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                network: 'Devnet',
+                receiver: {
+                    truncated: '65MUM..L2Fhk',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '1',
+                    raw: 1,
+                    unit: 'TOKEN',
+                },
+            });
+        });
+
+        it('should create a SOL receipt from a transferWithSeed instruction with the derived source as sender', async () => {
+            const base = PublicKey.unique();
+            const derived = PublicKey.unique();
+            const tx = buildParsedTransaction({
+                accountKeys: [base, derived, RECEIVER.publicKey, SystemProgram.programId],
+                instructions: [
+                    buildSolTransferWithSeedIx({
+                        destination: RECEIVER.publicKey,
+                        lamports: 50000000,
+                        source: derived,
+                        sourceBase: base,
+                        sourceOwner: SystemProgram.programId,
+                        sourceSeed: 'tws-fixture',
+                    }),
+                ],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.Devnet, transaction: tx });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                kind: 'sol',
+                receiver: { address: RECEIVER.publicKey.toBase58() },
+                sender: { address: derived.toBase58() },
+                total: { formatted: '0.05', raw: 50000000, unit: 'SOL' },
+            });
+        });
+
+        it('should aggregate transfer and transferWithSeed instructions into transfers[]', async () => {
+            const base = PublicKey.unique();
+            const derived = PublicKey.unique();
+            const tx = buildParsedTransaction({
+                accountKeys: [
+                    SENDER.publicKey,
+                    base,
+                    derived,
+                    RECEIVER.publicKey,
+                    RECEIVER_2.publicKey,
+                    SystemProgram.programId,
+                ],
+                instructions: [
+                    buildSolTransferIx({
+                        destination: RECEIVER.publicKey,
+                        lamports: 80000000,
+                        source: SENDER.publicKey,
+                    }),
+                    buildSolTransferWithSeedIx({
+                        destination: RECEIVER_2.publicKey,
+                        lamports: 50000000,
+                        source: derived,
+                        sourceBase: base,
+                        sourceOwner: SystemProgram.programId,
+                        sourceSeed: 'tws-fixture',
+                    }),
+                ],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction: tx });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.kind).toBe('sol');
+            expect(receipt.total).toMatchObject({ formatted: '0.13', raw: 130000000, unit: 'SOL' });
+            expect(receipt.transfers).toHaveLength(2);
+            expect(receipt.transfers?.[0]).toMatchObject({
+                amount: { raw: 80000000, unit: 'SOL' },
+                receiver: { address: RECEIVER.publicKey.toBase58() },
+                sender: { address: SENDER.publicKey.toBase58() },
+            });
+            expect(receipt.transfers?.[1]).toMatchObject({
+                amount: { raw: 50000000, unit: 'SOL' },
+                receiver: { address: RECEIVER_2.publicKey.toBase58() },
+                sender: { address: derived.toBase58() },
+            });
+        });
+    });
+
+    describe('token transfer receipts', () => {
+        it('should create a formatted token transfer receipt for transferChecked', async () => {
+            const mockTokenInfo = {
+                logoURI: 'https://example.com/usdc.png',
+                symbol: 'USDC',
+            };
+
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcTransferTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce(mockTokenInfo);
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                network: 'Mainnet Beta',
+                receiver: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '1',
+                    raw: 1,
+                    unit: 'USDC',
+                },
+            });
+            expect(getTokenInfo).toHaveBeenCalledWith(
+                '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+                Cluster.MainnetBeta,
+            );
+        });
+
+        it('should create a formatted token transfer receipt for regular transfer', async () => {
+            const mockTokenInfo = {
+                symbol: 'USDC',
+            };
+
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcRegularTransferTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce(mockTokenInfo);
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                receiver: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '1',
+                    raw: 1,
+                    unit: 'USDC',
+                },
+            });
+        });
+
+        it.each([
+            ['returns undefined', () => vi.mocked(getTokenInfo).mockResolvedValueOnce(undefined)],
+            ['throws an error', () => vi.mocked(getTokenInfo).mockRejectedValueOnce(new Error('Token info not found'))],
+        ])('should handle token transfer when getTokenInfo %s', async (_, mockTokenInfo) => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcTransferTransaction,
+            });
+            mockTokenInfo();
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                total: {
+                    unit: 'TOKEN',
+                },
+            });
+        });
+
+        it('should create a formatted token transfer receipt for Token-2022 transfer2', async () => {
+            const mockTokenInfo = {
+                logoURI: 'https://example.com/t22.png',
+                symbol: 'T22',
+            };
+
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockToken2022Transfer2Transaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce(mockTokenInfo);
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                network: 'Mainnet Beta',
+                receiver: {
+                    truncated: '65MUM..L2Fhk',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '100',
+                    raw: 100,
+                    unit: 'T22',
+                },
+            });
+            expect(getTokenInfo).toHaveBeenCalledWith(
+                '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
+                Cluster.MainnetBeta,
+            );
+        });
+
+        it('should create a formatted token transfer receipt for Token-2022 transferChecked', async () => {
+            const mockTokenInfo = {
+                logoURI: 'https://example.com/token-2022.png',
+                symbol: 'T2022',
+            };
+
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockToken2022TransferTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce(mockTokenInfo);
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt).toMatchObject({
+                fee: {
+                    formatted: '0.000005',
+                    raw: 5000,
+                },
+                network: 'Mainnet Beta',
+                receiver: {
+                    truncated: '65MUM..L2Fhk',
+                },
+                sender: {
+                    truncated: 'Hd3f3..R3bD5',
+                },
+                total: {
+                    formatted: '100',
+                    raw: 100,
+                    unit: 'T2022',
+                },
+            });
+            expect(getTokenInfo).toHaveBeenCalledWith(
+                'AN8h2reVWuPAWXhfJQounhTMqb5bvwVKumX6pMmSK25U',
+                Cluster.MainnetBeta,
+            );
+        });
+
+        it('should create a receipt for multisig token transfer using multisigAuthority as sender', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcMultisigTransferTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce({ symbol: 'USDC' });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.sender.address).toBe(MULTISIG_AUTHORITY.publicKey.toBase58());
+            expect(receipt.receiver.address).toBe(RECEIVER.publicKey.toBase58());
+        });
+
+        it('should create a multi-transfer token receipt summing totals and exposing per-instruction transfers', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcMultipleTransfersTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce({ symbol: 'USDC' });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            const { authority, mint, receiver1, receiver2 } = mockUsdcMultipleTransfersAddresses;
+
+            expect(receipt.total).toMatchObject({
+                formatted: '1.000841',
+                raw: 1.000841,
+                unit: 'USDC',
+            });
+            expect(receipt.sender.address).toBe(authority);
+            expect(receipt.receiver.address).toBe(receiver1);
+            expect(receipt.transfers).toHaveLength(2);
+            expect(receipt.transfers?.[0]).toMatchObject({
+                amount: { formatted: '1', raw: 1, unit: 'USDC' },
+                receiver: { address: receiver1 },
+                sender: { address: authority },
+            });
+            expect(receipt.transfers?.[1]).toMatchObject({
+                amount: { formatted: '0.000841', raw: 0.000841, unit: 'USDC' },
+                receiver: { address: receiver2 },
+                sender: { address: authority },
+            });
+            expect(getTokenInfo).toHaveBeenCalledWith(mint, Cluster.MainnetBeta);
+        });
+    });
+
+    describe('no transfer receipts', () => {
+        it.each([
+            ['zero SOL transfer', mockZeroTransferTransaction],
+            ['Jito-only SOL transfer', mockJitoOnlyTransferTransaction],
+            ['transaction with no transfers', mockNoTransferTransaction],
+        ])('should report no-transfers for %s', async (_, transaction) => {
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction });
+
+            const result = await createReceipt(mockSignature);
+
+            expect(result).toEqual({ kind: 'unavailable', reason: 'no-transfers' });
+        });
+    });
+
+    describe('inner-instruction transfers', () => {
+        it('should build a multi-transfer SOL receipt from inner SystemProgram transfers', async () => {
+            const wrapperProgram = Keypair.generate().publicKey;
+            const tx = buildParsedTransaction({
+                accountKeys: [
+                    SENDER.publicKey,
+                    RECEIVER.publicKey,
+                    RECEIVER_2.publicKey,
+                    SystemProgram.programId,
+                    wrapperProgram,
+                ],
+                innerInstructions: [
+                    buildInnerGroup(0, [
+                        buildSolTransferIx({
+                            destination: RECEIVER.publicKey,
+                            lamports: 80000000,
+                            source: SENDER.publicKey,
+                        }),
+                        buildSolTransferIx({
+                            destination: RECEIVER_2.publicKey,
+                            lamports: 50000000,
+                            source: SENDER.publicKey,
+                        }),
+                        buildSolTransferIx({
+                            destination: RECEIVER.publicKey,
+                            lamports: 10000000,
+                            source: SENDER.publicKey,
+                        }),
+                    ]),
+                ],
+                instructions: [buildPartiallyDecodedIx({ programId: wrapperProgram })],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction: tx });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.kind).toBe('sol');
+            expect(receipt.total).toMatchObject({ formatted: '0.14', raw: 140000000, unit: 'SOL' });
+            expect(receipt.transfers).toHaveLength(3);
+            expect(receipt.transfers?.[0]).toMatchObject({
+                amount: { formatted: '0.08', raw: 80000000, unit: 'SOL' },
+                receiver: { address: RECEIVER.publicKey.toBase58() },
+                sender: { address: SENDER.publicKey.toBase58() },
+            });
+        });
+
+        it('should build a multi-transfer token receipt from inner transferChecked CPIs', async () => {
+            const wrapperProgram = Keypair.generate().publicKey;
+            const feePayer = Keypair.generate().publicKey;
+            const authority = Keypair.generate().publicKey;
+            const sourceTokenAccount = Keypair.generate().publicKey;
+            const destinationTokenAccount1 = Keypair.generate().publicKey;
+            const destinationTokenAccount2 = Keypair.generate().publicKey;
+            const receiverOwner1 = Keypair.generate().publicKey;
+            const receiverOwner2 = Keypair.generate().publicKey;
+            const mint = Keypair.generate().publicKey;
+            const tokenProgram = new PublicKey(TOKEN_PROGRAM_ADDRESS);
+
+            const accountKeys = [
+                feePayer,
+                authority,
+                sourceTokenAccount,
+                destinationTokenAccount1,
+                destinationTokenAccount2,
+                mint,
+                tokenProgram,
+                wrapperProgram,
+            ];
+            const indexOf = (k: (typeof accountKeys)[number]) => accountKeys.findIndex(x => x.equals(k));
+
+            const tx = buildParsedTransaction({
+                accountKeys,
+                innerInstructions: [
+                    buildInnerGroup(0, [
+                        buildTokenTransferCheckedIx({
+                            amount: '1000000',
+                            authority,
+                            decimals: 6,
+                            destinationTokenAccount: destinationTokenAccount1,
+                            mint,
+                            sourceTokenAccount,
+                        }),
+                        buildTokenTransferCheckedIx({
+                            amount: '841',
+                            authority,
+                            decimals: 6,
+                            destinationTokenAccount: destinationTokenAccount2,
+                            mint,
+                            sourceTokenAccount,
+                        }),
+                    ]),
+                ],
+                instructions: [buildPartiallyDecodedIx({ programId: wrapperProgram })],
+                postTokenBalances: [
+                    {
+                        accountIndex: indexOf(destinationTokenAccount1),
+                        mint: mint.toBase58(),
+                        owner: receiverOwner1.toBase58(),
+                        programId: tokenProgram.toBase58(),
+                        uiTokenAmount: { amount: '1000000', decimals: 6, uiAmount: 1, uiAmountString: '1' },
+                    },
+                    {
+                        accountIndex: indexOf(destinationTokenAccount2),
+                        mint: mint.toBase58(),
+                        owner: receiverOwner2.toBase58(),
+                        programId: tokenProgram.toBase58(),
+                        uiTokenAmount: { amount: '841', decimals: 6, uiAmount: 0.000841, uiAmountString: '0.000841' },
+                    },
+                ],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction: tx });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce({ symbol: 'USDC' });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.kind).toBe('token');
+            expect(receipt.total).toMatchObject({ formatted: '1.000841', raw: 1.000841, unit: 'USDC' });
+            expect(receipt.sender.address).toBe(authority.toBase58());
+            expect(receipt.receiver.address).toBe(receiverOwner1.toBase58());
+            expect(receipt.transfers).toHaveLength(2);
+            expect(receipt.transfers?.[1]).toMatchObject({
+                amount: { formatted: '0.000841', raw: 0.000841, unit: 'USDC' },
+                receiver: { address: receiverOwner2.toBase58() },
+                sender: { address: authority.toBase58() },
+            });
+        });
+
+        it('should produce a single SOL receipt when paired with an ATA createIdempotent (inner rent funding ignored)', async () => {
+            // SOL-only counterpart to the USDC + ATA case below: top-level System.transfer to the
+            // recipient + top-level ATA createIdempotent whose inner System.transfer tops up rent.
+            // Only the intentional payment should surface; the rent CPI must be filtered.
+            const feePayer = Keypair.generate().publicKey;
+            const recipient = Keypair.generate().publicKey;
+            const ataAddress = Keypair.generate().publicKey;
+            const owner = Keypair.generate().publicKey;
+            const mint = Keypair.generate().publicKey;
+            const ataProgram = new PublicKey(ASSOCIATED_TOKEN_PROGRAM_ADDRESS);
+
+            const tx = buildParsedTransaction({
+                accountKeys: [feePayer, recipient, ataAddress, owner, mint, ataProgram, SystemProgram.programId],
+                innerInstructions: [
+                    buildInnerGroup(1, [
+                        buildSolTransferIx({
+                            destination: ataAddress,
+                            lamports: 1148400,
+                            source: feePayer,
+                        }),
+                    ]),
+                ],
+                instructions: [
+                    buildSolTransferIx({
+                        destination: recipient,
+                        lamports: 1000000,
+                        source: feePayer,
+                    }),
+                    buildPartiallyDecodedIx({ programId: ataProgram }),
+                ],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction: tx });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.kind).toBe('sol');
+            expect(receipt.total).toMatchObject({ formatted: '0.001', raw: 1000000, unit: 'SOL' });
+            expect(receipt.sender.address).toBe(feePayer.toBase58());
+            expect(receipt.receiver.address).toBe(recipient.toBase58());
+            expect(receipt.transfers).toBeUndefined();
+        });
+
+        it('should produce a single USDC receipt when paired with an ATA createIdempotent (inner rent funding ignored)', async () => {
+            // Realistic combo: send USDC to a fresh ATA. The ATA program's createIdempotent
+            // emits an inner SystemProgram transfer (rent funding) which must NOT be surfaced
+            // — the user-intended payment is the top-level transferChecked.
+            const feePayer = Keypair.generate().publicKey;
+            const authority = Keypair.generate().publicKey;
+            const sourceTokenAccount = Keypair.generate().publicKey;
+            const destinationTokenAccount = Keypair.generate().publicKey;
+            const receiverOwner = Keypair.generate().publicKey;
+            const mint = Keypair.generate().publicKey;
+            const tokenProgram = new PublicKey(TOKEN_PROGRAM_ADDRESS);
+            const ataProgram = new PublicKey(ASSOCIATED_TOKEN_PROGRAM_ADDRESS);
+
+            const accountKeys = [
+                feePayer,
+                authority,
+                sourceTokenAccount,
+                destinationTokenAccount,
+                receiverOwner,
+                mint,
+                tokenProgram,
+                ataProgram,
+                SystemProgram.programId,
+            ];
+
+            const tx = buildParsedTransaction({
+                accountKeys,
+                innerInstructions: [
+                    buildInnerGroup(0, [
+                        // ATA createIdempotent funds the new account by CPI'ing System.transfer.
+                        buildSolTransferIx({
+                            destination: destinationTokenAccount,
+                            lamports: 2039280,
+                            source: feePayer,
+                        }),
+                    ]),
+                ],
+                instructions: [
+                    // Top-level [0]: ATA createIdempotent (PartiallyDecoded — not an SPL transfer).
+                    buildPartiallyDecodedIx({ programId: ataProgram }),
+                    // Top-level [1]: the actual USDC payment.
+                    buildTokenTransferCheckedIx({
+                        amount: '1000000',
+                        authority,
+                        decimals: 6,
+                        destinationTokenAccount,
+                        mint,
+                        sourceTokenAccount,
+                    }),
+                ],
+                postTokenBalances: [
+                    {
+                        accountIndex: accountKeys.findIndex(k => k.equals(destinationTokenAccount)),
+                        mint: mint.toBase58(),
+                        owner: receiverOwner.toBase58(),
+                        programId: tokenProgram.toBase58(),
+                        uiTokenAmount: { amount: '1000000', decimals: 6, uiAmount: 1, uiAmountString: '1' },
+                    },
+                ],
+            });
+            vi.mocked(getTx).mockResolvedValueOnce({ cluster: Cluster.MainnetBeta, transaction: tx });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce({ symbol: 'USDC' });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            expect(receipt.kind).toBe('token');
+            expect(receipt.total).toMatchObject({ formatted: '1', raw: 1, unit: 'USDC' });
+            expect(receipt.sender.address).toBe(authority.toBase58());
+            expect(receipt.receiver.address).toBe(receiverOwner.toBase58());
+            // Single token transfer => no multi-row table; the inner rent SOL transfer must NOT promote
+            // this to a multi-transfer receipt.
+            expect(receipt.transfers).toBeUndefined();
+        });
+    });
+
+    describe('mixed-mint token transfers', () => {
+        it('should report mixed-mint when token transfers use different mints', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockMixedMintTransfersTransaction,
+            });
+
+            const result = await createReceipt(mockSignature);
+
+            expect(result).toEqual({ kind: 'unavailable', reason: 'mixed-mint' });
+        });
+
+        it('should sum same-mint token transfers exactly (no float drift)', async () => {
+            vi.mocked(getTx).mockResolvedValueOnce({
+                cluster: Cluster.MainnetBeta,
+                transaction: mockUsdcFpPrecisionTransfersTransaction,
+            });
+            vi.mocked(getTokenInfo).mockResolvedValueOnce({ symbol: 'USDC' });
+
+            const receipt = unwrap(await createReceipt(mockSignature));
+
+            // 0.1 + 0.2 via naive float addition would yield 0.30000000000000004.
+            expect(receipt.total.raw).toBe(0.3);
+            expect(receipt.total.formatted).toBe('0.3');
+        });
+    });
+});

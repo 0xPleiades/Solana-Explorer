@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-syntax -- test assertions use RegExp for pattern matching */
 import { PublicKey } from '@solana/web3.js';
 import { render, screen } from '@testing-library/react';
 import React from 'react';
@@ -10,12 +11,10 @@ import { VerifiedProgramBadge } from '../VerifiedProgramBadge';
 vi.mock('@/app/providers/cluster', () => ({
     useCluster: vi.fn(),
 }));
-vi.mock('@/app/utils/url', () => ({
-    useClusterPath: vi.fn(() => '/address/mock/verified-build'),
-}));
 
-// Mock the useIsProgramVerified hook
-vi.mock('@/app/utils/verified-builds', () => ({
+// Mock only the useIsProgramVerified hook; keep the real cluster-support helpers.
+vi.mock('@/app/utils/verified-builds', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/app/utils/verified-builds')>()),
     useIsProgramVerified: vi.fn(),
 }));
 
@@ -32,7 +31,7 @@ const mockPubkey = new PublicKey('cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK');
 describe('VerifiedProgramBadge (mocked useIsProgramVerified)', () => {
     afterEach(() => vi.clearAllMocks());
 
-    it('shows verified badge when isVerified is true', () => {
+    it('should show verified badge when isVerified is true', () => {
         (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.MainnetBeta });
         (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
             data: true,
@@ -43,7 +42,7 @@ describe('VerifiedProgramBadge (mocked useIsProgramVerified)', () => {
         expect(screen.getByText(/Program Source Verified/i)).toBeInTheDocument();
     });
 
-    it('shows not verified badge when isVerified is false', () => {
+    it('should show not verified badge when isVerified is false', () => {
         (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.MainnetBeta });
         (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
             data: false,
@@ -54,7 +53,7 @@ describe('VerifiedProgramBadge (mocked useIsProgramVerified)', () => {
         expect(screen.getByText(/Not verified/i)).toBeInTheDocument();
     });
 
-    it('shows error badge when error is true', () => {
+    it('should show error badge when error is true', () => {
         (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.MainnetBeta });
         (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
             data: false,
@@ -65,7 +64,7 @@ describe('VerifiedProgramBadge (mocked useIsProgramVerified)', () => {
         expect(screen.getByText(/Error fetching verified build information/i)).toBeInTheDocument();
     });
 
-    it('shows loading badge when isLoading is true', () => {
+    it('should show a loading skeleton when isLoading is true', () => {
         (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.MainnetBeta });
         (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
             data: false,
@@ -73,6 +72,30 @@ describe('VerifiedProgramBadge (mocked useIsProgramVerified)', () => {
             isLoading: true,
         });
         render(<VerifiedProgramBadge programData={mockProgramData} pubkey={mockPubkey} />);
-        expect(screen.getByText(/Loading/i)).toBeInTheDocument();
+        // Loading now renders a Skeleton (no text) instead of a "Loading..." badge.
+        expect(screen.getByTestId('verified-build-loading')).toBeInTheDocument();
+        expect(screen.queryByText(/Program Source Verified|Program Not Verified/i)).not.toBeInTheDocument();
+    });
+
+    it('should show the verified badge on devnet (a supported cluster)', () => {
+        (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.Devnet });
+        (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+            data: true,
+            error: false,
+            isLoading: false,
+        });
+        render(<VerifiedProgramBadge programData={mockProgramData} pubkey={mockPubkey} />);
+        expect(screen.getByText(/Program Source Verified/i)).toBeInTheDocument();
+    });
+
+    it('should show the unsupported-cluster notice on testnet', () => {
+        (useCluster as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ cluster: Cluster.Testnet });
+        (useIsProgramVerified as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+            data: false,
+            error: false,
+            isLoading: false,
+        });
+        render(<VerifiedProgramBadge programData={mockProgramData} pubkey={mockPubkey} />);
+        expect(screen.getByText(/only available on Mainnet and Devnet/i)).toBeInTheDocument();
     });
 });

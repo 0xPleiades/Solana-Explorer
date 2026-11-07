@@ -1,0 +1,146 @@
+// @vitest-environment jsdom
+
+import { buildFormattedReceipt } from '@entities/token-receipt/__fixtures__/formatted-receipt';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { FormattedReceipt } from '../../types';
+import { buildReceiptCsvRows, generateReceiptCsv } from '../generate-receipt-csv';
+
+const RECEIPT = buildFormattedReceipt();
+
+const SIGNATURE = '5UfDuX7hXbGjGHqPXRGaHdSecretSignature1234567890abcdef';
+
+describe('buildReceiptCsvRows', () => {
+    it('should include all expected fields in correct column order', () => {
+        const [row] = buildReceiptCsvRows(RECEIPT, SIGNATURE);
+
+        expect(row[0]).toBe('2023-11-14 22:13:20 UTC');
+        expect(row[1]).toBe(SIGNATURE);
+        expect(row[2]).toBe('mainnet-beta');
+        expect(row[3]).toBe('SenderAddr111111111111111111111111111111111');
+        expect(row[4]).toBe('ReceiverAddr2222222222222222222222222222222');
+        expect(row[5]).toBe('1.0');
+        expect(row[6]).toBe('SOL');
+        expect(row[7]).toBe('');
+        expect(row[8]).toBe('');
+        expect(row[9]).toBe('0.000005');
+        expect(row[10]).toBe('Payment for services');
+        expect(row).toHaveLength(11);
+    });
+
+    it('should include USD value when provided', () => {
+        const [row] = buildReceiptCsvRows(RECEIPT, SIGNATURE, '~150.00 USD');
+        expect(row[8]).toBe('~150.00 USD');
+    });
+
+    it('should include mint address for token receipts', () => {
+        const tokenReceipt: FormattedReceipt = {
+            ...RECEIPT,
+            kind: 'token',
+            mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+            symbol: 'USDC',
+            total: { formatted: '143.25', raw: 143.25, unit: 'USDC' },
+        };
+        const [row] = buildReceiptCsvRows(tokenReceipt, SIGNATURE);
+        expect(row[6]).toBe('USDC');
+        expect(row[7]).toBe('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+    });
+
+    it('should leave memo field empty when absent', () => {
+        const receiptNoMemo: FormattedReceipt = { ...RECEIPT, memo: undefined };
+        const [row] = buildReceiptCsvRows(receiptNoMemo, SIGNATURE);
+        expect(row[10]).toBe('');
+    });
+
+    it('should sanitize memo with formula-injection prefix', () => {
+        const receipt: FormattedReceipt = { ...RECEIPT, memo: '=SUM(A1)' };
+        const [row] = buildReceiptCsvRows(receipt, SIGNATURE);
+        expect(row[10]).toBe("'=SUM(A1)");
+    });
+
+    it('should sanitize token symbol with formula-injection prefix', () => {
+        const receipt: FormattedReceipt = {
+            ...RECEIPT,
+            kind: 'token',
+            mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+            symbol: '=EVIL',
+            total: { formatted: '100', raw: 100, unit: '=EVIL' },
+        };
+        const [row] = buildReceiptCsvRows(receipt, SIGNATURE);
+        expect(row[6]).toBe("'=EVIL");
+    });
+
+    it('should emit one row per transfer for multi-transfer receipts', () => {
+        const multiReceipt: FormattedReceipt = {
+            ...RECEIPT,
+            transfers: [
+                {
+                    amount: { formatted: '0.6', raw: 600000000, unit: 'SOL' },
+                    receiver: { address: 'ReceiverAddr3333333333333333333333333333333', truncated: 'Recv...3333' },
+                    sender: { address: 'SenderAddr111111111111111111111111111111111', truncated: 'Send...1111' },
+                },
+                {
+                    amount: { formatted: '0.4', raw: 400000000, unit: 'SOL' },
+                    receiver: { address: 'ReceiverAddr4444444444444444444444444444444', truncated: 'Recv...4444' },
+                    sender: { address: 'SenderAddr111111111111111111111111111111111', truncated: 'Send...1111' },
+                },
+            ],
+        };
+        const rows = buildReceiptCsvRows(multiReceipt, SIGNATURE, '~90.00 USD');
+        expect(rows).toHaveLength(3);
+        expect(rows[0][3]).toBe('SenderAddr111111111111111111111111111111111');
+        expect(rows[0][4]).toBe('ReceiverAddr3333333333333333333333333333333');
+        expect(rows[0][5]).toBe('0.6');
+        expect(rows[0][8]).toBe('~54.00 USD'); // 0.6/1.0 * $90
+        expect(rows[0][9]).toBe('');
+        expect(rows[1][4]).toBe('ReceiverAddr4444444444444444444444444444444');
+        expect(rows[1][5]).toBe('0.4');
+        expect(rows[1][8]).toBe('~36.00 USD'); // 0.4/1.0 * $90
+        expect(rows[1][9]).toBe('');
+        expect(rows[2][9]).toBe('0.000005');
+    });
+});
+
+describe('generateReceiptCsv', () => {
+    let mockClick: ReturnType<typeof vi.fn>;
+    let linkElement: Record<string, unknown>;
+
+    beforeEach(() => {
+        mockClick = vi.fn();
+        linkElement = { click: mockClick, download: '', href: '' };
+        vi.spyOn(document, 'createElement').mockReturnValue(linkElement as unknown as HTMLElement);
+        vi.spyOn(document.body, 'appendChild').mockReturnValue(linkElement as unknown as ChildNode);
+        vi.spyOn(document.body, 'removeChild').mockReturnValue(linkElement as unknown as ChildNode);
+        vi.stubGlobal('URL', {
+            createObjectURL: vi.fn().mockReturnValue('blob:test-url'),
+            revokeObjectURL: vi.fn(),
+        });
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('should download a CSV Blob through a temporary object URL', async () => {
+        await generateReceiptCsv(RECEIPT, SIGNATURE);
+
+        expect(linkElement.download).toBe(`solana-receipt-${SIGNATURE}.csv`);
+        expect(linkElement.href).toBe('blob:test-url');
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-url');
+        const blobArg = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
+        expect(blobArg).toBeInstanceOf(Blob);
+        expect(blobArg.type).toBe('text/csv;charset=utf-8;');
+        expect(blobArg.size).toBeGreaterThan(0);
+    });
+
+    it('should revoke the object URL even when link.click throws', async () => {
+        mockClick.mockImplementation(() => {
+            throw new Error('click failed');
+        });
+
+        await expect(generateReceiptCsv(RECEIPT, SIGNATURE)).rejects.toThrow('click failed');
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-url');
+        expect(document.body.removeChild).toHaveBeenCalled();
+    });
+});

@@ -1,8 +1,9 @@
+import { getAnchorAccountIdls, useAnchorProgram } from '@entities/idl';
 import { PublicKey } from '@solana/web3.js';
 import { Suspense } from 'react';
 
+import { Skeleton } from '@/app/components/shared/ui/skeleton';
 import { UpgradeableLoaderAccountData } from '@/app/providers/accounts';
-import { useAnchorProgram } from '@/app/providers/anchor';
 import { useCluster } from '@/app/providers/cluster';
 import {
     SQUADS_V3_ADDRESS,
@@ -10,10 +11,16 @@ import {
     useSquadsMultisig,
     useSquadsMultisigLookup,
 } from '@/app/providers/squadsMultisig';
+import { KeyValueRows } from '@/app/shared/ui/key-value';
+import { OverviewCard } from '@/app/shared/ui/OverviewCard';
 
 import { Address } from '../common/Address';
 import { LoadingCard } from '../common/LoadingCard';
-import { TableCardBody } from '../common/TableCardBody';
+
+// The Squads program ids are static constants — decode them once at module load instead of building a
+// fresh PublicKey (base58 decode + validation) on every render.
+const SQUADS_V3_PUBKEY = new PublicKey(SQUADS_V3_ADDRESS);
+const SQUADS_V4_PUBKEY = new PublicKey(SQUADS_V4_ADDRESS);
 
 export function ProgramMultisigCard({ data }: { data: UpgradeableLoaderAccountData }) {
     return (
@@ -26,16 +33,18 @@ export function ProgramMultisigCard({ data }: { data: UpgradeableLoaderAccountDa
 function ProgramMultisigCardInner({ programAuthority }: { programAuthority: PublicKey | null | undefined }) {
     const { cluster, url } = useCluster();
     const { data: squadMapInfo } = useSquadsMultisigLookup(programAuthority, cluster);
-    const anchorProgram = useAnchorProgram(
-        squadMapInfo?.version === 'v3' ? SQUADS_V3_ADDRESS : SQUADS_V4_ADDRESS,
+    const squadsAddress = squadMapInfo?.version === 'v3' ? SQUADS_V3_ADDRESS : SQUADS_V4_ADDRESS;
+    const { program: anchorProgram } = useAnchorProgram({
+        cluster,
+        programAddress: squadsAddress,
+        select: getAnchorAccountIdls,
         url,
-        cluster
-    );
+    });
     const { data: squadInfo } = useSquadsMultisig(
-        anchorProgram.program,
+        anchorProgram,
         squadMapInfo?.multisig,
         cluster,
-        squadMapInfo?.version
+        squadMapInfo?.version,
     );
 
     let members: PublicKey[];
@@ -45,57 +54,44 @@ function ProgramMultisigCardInner({ programAuthority }: { programAuthority: Publ
         members = squadInfo?.multisig.keys ?? [];
     }
 
+    const memberCount =
+        squadInfo?.version === 'v4' ? squadInfo?.multisig.members.length : squadInfo?.multisig.keys.length;
+
     return (
-        <div className="card security-txt">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">
-                    Upgrade Authority Multisig Information
-                </h3>
-            </div>
-            <TableCardBody>
-                <tr>
-                    <td>Multisig Program</td>
-                    <td className="text-lg-end">{squadMapInfo?.version === 'v4' ? 'Squads V4' : 'Squads V3'}</td>
-                </tr>
-                <tr>
-                    <td>Multisig Program Id</td>
-                    <td className="text-lg-end">
-                        <Address
-                            pubkey={
-                                new PublicKey(squadMapInfo?.version === 'v4' ? SQUADS_V4_ADDRESS : SQUADS_V3_ADDRESS)
-                            }
-                            alignRight
-                            link
-                        />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Multisig Account</td>
-                    <td className="text-lg-end">
-                        {squadMapInfo?.isSquad ? (
-                            <Address pubkey={new PublicKey(squadMapInfo.multisig)} alignRight link />
-                        ) : null}
-                    </td>
-                </tr>
-                <tr>
-                    <td>Multisig Approval Threshold</td>
-                    <td className="text-lg-end">
-                        {squadInfo?.multisig.threshold}
-                        {' of '}
-                        {squadInfo?.version === 'v4'
-                            ? squadInfo?.multisig.members.length
-                            : squadInfo?.multisig.keys.length}
-                    </td>
-                </tr>
-                {members.map((member, idx) => (
-                    <tr key={idx}>
-                        <td>Multisig Member {idx + 1}</td>
-                        <td className="text-lg-end">
-                            <Address pubkey={member} alignRight link />
-                        </td>
-                    </tr>
-                ))}
-            </TableCardBody>
-        </div>
+        <OverviewCard title="Upgrade Authority Multisig Information">
+            <KeyValueRows
+                rows={[
+                    {
+                        label: 'Multisig Program',
+                        value: squadMapInfo?.version === 'v4' ? 'Squads V4' : 'Squads V3',
+                    },
+                    {
+                        label: 'Multisig Program Id',
+                        value: (
+                            <Address
+                                pubkey={squadMapInfo?.version === 'v4' ? SQUADS_V4_PUBKEY : SQUADS_V3_PUBKEY}
+                                link
+                            />
+                        ),
+                    },
+                    squadMapInfo?.isSquad && {
+                        label: 'Multisig Account',
+                        value: <Address pubkey={new PublicKey(squadMapInfo.multisig)} link />,
+                    },
+                    {
+                        label: 'Multisig Approval Threshold',
+                        value: squadInfo ? (
+                            `${squadInfo.multisig.threshold} of ${memberCount}`
+                        ) : (
+                            <Skeleton className="h-4 w-16" />
+                        ),
+                    },
+                    ...members.map((member, idx) => ({
+                        label: `Multisig Member ${idx + 1}`,
+                        value: <Address pubkey={member} link />,
+                    })),
+                ]}
+            />
+        </OverviewCard>
     );
 }

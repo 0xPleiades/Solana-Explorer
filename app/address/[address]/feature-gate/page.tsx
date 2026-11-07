@@ -5,31 +5,45 @@ import ReactMarkdown from 'react-markdown';
 import remarkFrontmatter from 'remark-frontmatter';
 import remarkGFM from 'remark-gfm';
 
-import { fetchFeatureGateInformation } from '@/app/features/feature-gate';
-import { getFeatureInfo } from '@/app/utils/feature-gate/utils';
+import { getFeatureInfo } from '@/app/entities/feature-gate/server';
+import { fetchFeatureGateInformation, getFeatureGateOpenGraph } from '@/app/features/feature-gate/server';
+import { BaseTable } from '@/app/shared/ui/Table';
 
 type Props = Readonly<{
-    params: {
+    params: Promise<{
         address: string;
-    };
+    }>;
 }>;
 
 export async function generateMetadata(props: AddressPageMetadataProps): Promise<Metadata> {
+    const { address } = await props.params;
+    const title = `Feature Gate | ${await getReadableTitleFromAddress(props)} | Solana`;
     return {
-        description: `Feature information for address ${props.params.address} on Solana`,
-        title: `Feature Gate | ${await getReadableTitleFromAddress(props)} | Solana`,
+        description: `Feature information for address ${address} on Solana`,
+        openGraph: getFeatureGateOpenGraph(address),
+        title,
     };
 }
 
-export default async function FeatureGatePage({ params: { address } }: Props) {
+export default async function FeatureGatePage(props: Props) {
+    const { address } = await props.params;
+
     const feature = getFeatureInfo(address);
     const data = await fetchFeatureGateInformation(feature);
 
-    // remark-gfm won't handle github-flavoured-markdown with a table present at it
-    // TODO: figure out a configuration to render GFM table correctly
     return (
         <FeatureGateCard>
-            <ReactMarkdown remarkPlugins={[remarkGFM, remarkFrontmatter]}>{data[0]}</ReactMarkdown>
+            <ReactMarkdown
+                remarkPlugins={[remarkGFM, remarkFrontmatter]}
+                components={{
+                    h2: ({ children }) => <h2 className="mb-2 mt-5 text-gray-300">{children}</h2>,
+                    li: ({ children }) => <li className="mb-1 text-gray-400">{children}</li>,
+                    p: ({ children }) => <p className="mb-4 mt-0 text-gray-400">{children}</p>,
+                    table: ({ children }) => <BaseTable ui="dashkit">{children}</BaseTable>,
+                }}
+            >
+                {data[0]}
+            </ReactMarkdown>
         </FeatureGateCard>
     );
 }

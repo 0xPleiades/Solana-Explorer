@@ -1,74 +1,101 @@
 'use client';
 
-import { Connection, programs } from '@metaplex/js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@components/shared/ui/tooltip';
+import { cn } from '@components/shared/utils';
+import { useTokenInfo } from '@entities/token-info';
 import { useCluster } from '@providers/cluster';
+import type { Address } from '@solana/kit';
 import { PublicKey } from '@solana/web3.js';
 import { displayAddress, TokenLabelInfo } from '@utils/tx';
 import { useClusterPath } from '@utils/url';
+import { cva } from 'class-variance-authority';
 import Link from 'next/link';
-import React from 'react';
-import { useState } from 'react';
-import useAsyncEffect from 'use-async-effect';
+import React, { useRef, useState } from 'react';
 
-import { getTokenInfoWithoutOnChainFallback } from '@/app/utils/token-info';
+import { EditIcon, NicknameEditor, useNickname } from '@/app/features/nicknames';
+import { useVisibility } from '@/app/shared/lib/visibility';
 
 import { Copyable } from './Copyable';
+import { useMidTruncation } from './useMidTruncation';
+
+const rowVariants = cva('relative flex w-full min-w-0 items-baseline overflow-x-clip px-px', {
+    defaultVariants: {
+        alignRight: false,
+    },
+    variants: {
+        alignRight: {
+            false: '',
+            true: 'md:justify-end',
+        },
+    },
+});
 
 type Props = {
-    pubkey: PublicKey;
     alignRight?: boolean;
+    className?: string;
     link?: boolean;
     raw?: boolean;
-    truncate?: boolean;
-    truncateUnknown?: boolean;
-    truncateChars?: number;
-    useMetadata?: boolean;
-    overrideText?: string;
+    noTruncate?: boolean;
+    /** Shows in place of an address that has no explorer label. */
+    fallbackText?: string;
     tokenLabelInfo?: TokenLabelInfo;
     fetchTokenLabelInfo?: boolean;
-};
+    'aria-label'?: string;
+    noCopy?: boolean;
+    noNicknameEditing?: boolean;
+} & ({ address: Address; pubkey?: PublicKey } | { address?: Address; pubkey: PublicKey });
 
 export function Address({
+    address: suppliedAddress,
     pubkey,
     alignRight,
     link,
     raw,
-    truncate,
-    truncateUnknown,
-    truncateChars,
-    useMetadata,
-    overrideText,
+    noTruncate,
+    fallbackText,
     tokenLabelInfo,
+    className,
     fetchTokenLabelInfo,
+    'aria-label': ariaLabel,
+    noCopy,
+    noNicknameEditing,
 }: Props) {
-    const address = pubkey.toBase58();
-    const { cluster } = useCluster();
+    const address = suppliedAddress ?? pubkey?.toBase58();
+    if (address === undefined) throw new Error('Address requires an address or pubkey');
+    const { cluster, genesisHash } = useCluster();
     const addressPath = useClusterPath({ pathname: `/address/${address}` });
+    const [editor, setEditor] = useState<'closed' | 'open' | 'unmounted'>('unmounted');
+    const nickname = useNickname(address);
+    const { ref: visibilityRef, isVisible } = useVisibility(fetchTokenLabelInfo);
 
     const display = displayAddress(address, cluster, tokenLabelInfo);
-    if (truncateUnknown && address === display) {
-        truncate = true;
-    }
 
     let addressLabel = raw ? address : display;
 
-    const metaplexData = useTokenMetadata(useMetadata, address);
-    if (metaplexData && metaplexData.data) {
-        addressLabel = metaplexData.data.data.name;
-    }
-
-    const tokenInfo = useTokenInfo(fetchTokenLabelInfo, address);
+    const shouldFetchTokenInfo = fetchTokenLabelInfo && isVisible;
+    const tokenInfo = useTokenInfo(shouldFetchTokenInfo, address, cluster, genesisHash);
     if (tokenInfo) {
         addressLabel = displayAddress(address, cluster, tokenInfo);
     }
 
-    if (truncateChars && addressLabel === address) {
-        addressLabel = addressLabel.slice(0, truncateChars) + '…';
+    if (fallbackText && addressLabel === address) {
+        addressLabel = fallbackText;
     }
 
-    if (overrideText) {
-        addressLabel = overrideText;
-    }
+    const displayText = nickname ? `"${nickname}" (${addressLabel})` : addressLabel;
+
+    // Mid-truncation applies to raw 44-char addresses. When a nickname is shown the address
+    // line always truncates regardless of the noTruncate prop (the nickname makes it necessary).
+    const isMidTruncateCandidate = (!noTruncate || !!nickname) && addressLabel === address;
+
+    const editBtnRef = useRef<HTMLButtonElement>(null);
+    const { rowRef, hiddenTextRef, isMidTruncated, midTruncatedText } = useMidTruncation(
+        isMidTruncateCandidate,
+        address,
+        {
+            trailingRef: editBtnRef,
+        },
+    );
 
     const handleMouseEnter = (text: string) => {
         const elements = document.querySelectorAll(`[data-address="${text}"]`);
@@ -84,83 +111,89 @@ export function Address({
         });
     };
 
-    const content = (
-        <Copyable text={address} replaceText={!alignRight}>
-            <span
-                data-address={address}
-                className="font-monospace"
-                onMouseEnter={() => handleMouseEnter(address)}
-                onMouseLeave={() => handleMouseLeave(address)}
-            >
-                {link ? (
-                    <Link className={truncate ? 'text-truncate address-truncate' : ''} href={addressPath}>
-                        {addressLabel}
-                    </Link>
-                ) : (
-                    <span className={truncate ? 'text-truncate address-truncate' : ''}>{addressLabel}</span>
-                )}
-            </span>
-        </Copyable>
+    const visibleText = isMidTruncated ? midTruncatedText : displayText;
+
+    const innerTextClassName = cn('font-mono', !nickname && !noTruncate && 'truncate', nickname && 'block min-w-0');
+
+    // When a nickname is set, render it and the address label as two stacked lines
+    // so neither overflows on narrow (mobile) viewports.
+    const nicknameDisplay = nickname ? (
+        <span className="flex min-w-0 flex-col">
+            <span className="truncate font-mono">&quot;{nickname}&quot;</span>
+            <span className="truncate font-mono text-muted">{isMidTruncated ? midTruncatedText : addressLabel}</span>
+        </span>
+    ) : undefined;
+
+    const innerContent = link ? (
+        <Link href={addressPath} className={innerTextClassName}>
+            {nickname ? nicknameDisplay : visibleText}
+        </Link>
+    ) : (
+        <span className={cn(innerTextClassName, className)}>{nickname ? nicknameDisplay : visibleText}</span>
+    );
+
+    const addressDisplay = isMidTruncateCandidate ? (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <span
+                    data-address={address}
+                    className="relative min-w-0 overflow-hidden font-mono"
+                    onMouseEnter={() => handleMouseEnter(address)}
+                    onMouseLeave={() => handleMouseLeave(address)}
+                >
+                    {innerContent}
+                </span>
+            </TooltipTrigger>
+            {isMidTruncated && (
+                <TooltipContent>
+                    <span className="font-mono">{address}</span>
+                </TooltipContent>
+            )}
+        </Tooltip>
+    ) : (
+        <span
+            data-address={address}
+            className="relative min-w-0 overflow-hidden font-mono"
+            onMouseEnter={() => handleMouseEnter(address)}
+            onMouseLeave={() => handleMouseLeave(address)}
+            title={nickname ? displayText : undefined}
+        >
+            {innerContent}
+        </span>
     );
 
     return (
-        <>
-            <div className={`d-none d-lg-flex align-items-center ${alignRight ? 'justify-content-end' : ''}`}>
-                {content}
+        <span ref={visibilityRef} className="block w-full min-w-0">
+            <div ref={rowRef} className={rowVariants({ alignRight: Boolean(alignRight) })} aria-label={ariaLabel}>
+                {/* Hidden span for measuring the natural text width — absolutely positioned so it doesn't affect layout */}
+                {isMidTruncateCandidate && (
+                    <span
+                        ref={hiddenTextRef}
+                        className="pointer-events-none invisible absolute whitespace-nowrap font-mono"
+                        aria-hidden
+                    >
+                        {addressLabel}
+                    </span>
+                )}
+                {noCopy ? addressDisplay : <Copyable text={address}>{addressDisplay}</Copyable>}
+                {!noNicknameEditing && (
+                    <button
+                        ref={editBtnRef}
+                        className="ms-1.5 flex-none shrink-0 cursor-pointer border-0 bg-transparent p-0 text-muted"
+                        onClick={e => {
+                            e.stopPropagation();
+                            setEditor('open');
+                        }}
+                        title="Edit nickname"
+                        style={{ fontSize: '0.875rem', lineHeight: 1 }}
+                    >
+                        <EditIcon className="-mt-0.5" />
+                    </button>
+                )}
+                {!noNicknameEditing && editor !== 'unmounted' && (
+                    <NicknameEditor address={address} open={editor === 'open'} onClose={() => setEditor('closed')} />
+                )}
             </div>
-            <div className="d-flex d-lg-none align-items-center">{content}</div>
-        </>
+        </span>
     );
 }
-const useTokenMetadata = (useMetadata: boolean | undefined, pubkey: string) => {
-    const [data, setData] = useState<programs.metadata.MetadataData>();
-    const { url } = useCluster();
-
-    useAsyncEffect(
-        async isMounted => {
-            if (!useMetadata) return;
-            if (pubkey && !data) {
-                try {
-                    const pda = await programs.metadata.Metadata.getPDA(pubkey);
-                    const connection = new Connection(url);
-                    const metadata = await programs.metadata.Metadata.load(connection, pda);
-                    if (isMounted()) {
-                        setData(metadata.data);
-                    }
-                } catch {
-                    if (isMounted()) {
-                        setData(undefined);
-                    }
-                }
-            }
-        },
-        [useMetadata, pubkey, url, data, setData]
-    );
-    return { data };
-};
-
-const useTokenInfo = (fetchTokenLabelInfo: boolean | undefined, pubkey: string) => {
-    const [info, setInfo] = useState<TokenLabelInfo>();
-    const { cluster, url } = useCluster();
-
-    useAsyncEffect(
-        async isMounted => {
-            if (!fetchTokenLabelInfo) return;
-            if (!info) {
-                try {
-                    const token = await getTokenInfoWithoutOnChainFallback(new PublicKey(pubkey), cluster);
-                    if (isMounted()) {
-                        setInfo(token);
-                    }
-                } catch {
-                    if (isMounted()) {
-                        setInfo(undefined);
-                    }
-                }
-            }
-        },
-        [fetchTokenLabelInfo, pubkey, cluster, url, info, setInfo]
-    );
-
-    return info;
-};

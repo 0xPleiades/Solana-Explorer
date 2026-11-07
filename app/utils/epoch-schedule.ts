@@ -132,6 +132,16 @@ const COMPUTE_UNIT_CONFIGS: readonly ComputeUnitConfigEntry[] = [
         maxComputeUnits: 60_000_000,
         simd: '0256',
     },
+    {
+        activations: {
+            [Cluster.MainnetBeta]: 1009,
+            [Cluster.Devnet]: 1100,
+            [Cluster.Testnet]: 983,
+        },
+        featureAccount: 'P1BCUMpAC7V2GRBRiJCNUgpMyWZhoqt3LKo712ePqsz',
+        maxComputeUnits: 100_000_000,
+        simd: '0286',
+    },
 ];
 
 /**
@@ -153,7 +163,8 @@ export function getMaxComputeUnitsInBlock({ epoch = 0n, cluster }: { epoch?: big
 
     for (const config of COMPUTE_UNIT_CONFIGS) {
         const activationEpoch = config.activations[cluster];
-        if (activationEpoch <= epochNumber && activationEpoch > highestActivationEpoch) {
+        // `>=` so that when several configs share an activation epoch on a cluster, the latest one wins.
+        if (activationEpoch <= epochNumber && activationEpoch >= highestActivationEpoch) {
             applicableConfig = config;
             highestActivationEpoch = activationEpoch;
         }

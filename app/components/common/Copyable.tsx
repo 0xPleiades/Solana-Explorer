@@ -1,98 +1,68 @@
 'use client';
 
-import React, { ReactNode, useState } from 'react';
-import { CheckCircle, Copy, XCircle } from 'react-feather';
+import { type ReactNode, useEffect, useState } from 'react';
+import { CheckCircle, Copy, Loader, XCircle } from 'react-feather';
 
-type CopyState = 'copy' | 'copied' | 'errored';
+import { type CopyState, useCopyToClipboard } from '@/app/shared/lib/useCopyToClipboard';
 
-export function Copyable({
-    text,
-    children,
-    replaceText,
-}: {
-    text: string;
-    children: ReactNode;
-    replaceText?: boolean;
-}) {
-    const [state, setState] = useState<CopyState>('copy');
+type CopyableProps = {
+    text: string | null;
+    children?: ReactNode;
+};
 
-    const handleClick = async () => {
-        try {
-            await navigator.clipboard.writeText(text);
-            setState('copied');
-        } catch (err) {
-            setState('errored');
+// Inline copy affordance: a small glyph that sits next to `children`. For a standalone labeled copy
+// button (e.g. drawer footer actions) use `CopyButton` instead.
+export function Copyable({ text, children }: CopyableProps) {
+    const [clipboardState, copy] = useCopyToClipboard(1000);
+    const [loading, setLoading] = useState(false);
+
+    const handleClick = () => {
+        if (typeof text !== 'string') {
+            setLoading(true);
+            return;
         }
-        setTimeout(() => setState('copy'), 1000);
+        copy(text);
+    };
+
+    useEffect(() => {
+        if (loading && typeof text === 'string') {
+            copy(text);
+            setLoading(false);
+        }
+    }, [text, loading, copy]);
+
+    const state: CopyState | 'loading' = loading ? 'loading' : clipboardState;
+
+    const copyStrategy: Record<CopyState | 'loading', JSX.Element> = {
+        copied: <CheckCircle className="align-text-top" size={13} />,
+        copy: <Copy className="cursor-pointer align-text-top" onClick={handleClick} size={13} />,
+        errored: (
+            <span title="Please check your browser's copy permissions.">
+                <XCircle className="align-text-top" size={13} />
+            </span>
+        ),
+        loading: <Loader className="align-text-top" size={13} />,
     };
 
     function CopyIcon() {
-        if (state === 'copy') {
-            return <Copy className="align-text-top c-pointer" onClick={handleClick} size={13} />;
-        } else if (state === 'copied') {
-            return <CheckCircle className="align-text-top" size={13} />;
-        } else if (state === 'errored') {
-            return (
-                <span title="Please check your browser's copy permissions.">
-                    <XCircle className="align-text-top" size={13} />
-                </span>
-            );
-        }
-        return null;
+        return copyStrategy[state] || null;
     }
 
-    let message: string | undefined;
     let textColor = '';
-    if (state === 'copied') {
-        message = 'Copied';
-        textColor = 'text-info';
+    if (state === 'copied' || state === 'loading') {
+        textColor = 'text-dk-info';
     } else if (state === 'errored') {
-        message = 'Copy Failed';
-        textColor = 'text-danger';
-    }
-
-    function PrependCopyIcon() {
-        return (
-            <>
-                <span className="font-size-tiny me-2">
-                    <span className={textColor}>
-                        {message !== undefined && <span className="me-2">{message}</span>}
-                        <CopyIcon />
-                    </span>
-                </span>
-                {children}
-            </>
-        );
-    }
-
-    function ReplaceWithMessage() {
-        return (
-            <span className="d-flex flex-column flex-nowrap">
-                <span className="font-size-tiny">
-                    <span className={textColor}>
-                        <CopyIcon />
-                        <span className="ms-2">{message}</span>
-                    </span>
-                </span>
-                <span className="v-hidden">{children}</span>
-            </span>
-        );
-    }
-
-    if (state === 'copy') {
-        return <PrependCopyIcon />;
-    } else if (replaceText) {
-        return <ReplaceWithMessage />;
+        textColor = 'text-dk-danger';
     }
 
     return (
         <>
-            <span className="d-none d-lg-inline">
-                <PrependCopyIcon />
+            <span className="mr-1.5" style={{ fontSize: '12px' }}>
+                <span className={textColor}>
+                    <CopyIcon />
+                </span>
             </span>
-            <span className="d-inline d-lg-none">
-                <ReplaceWithMessage />
-            </span>
+            {children}
         </>
     );
 }

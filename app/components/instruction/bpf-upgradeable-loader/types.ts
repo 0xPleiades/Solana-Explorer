@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-redeclare */
-
 import { PublicKeyFromString } from '@validators/pubkey';
 import { enums, Infer, nullable, number, optional, string, type } from 'superstruct';
 
@@ -48,6 +46,13 @@ export const SetAuthorityInfo = type({
     newAuthority: optional(PublicKeyFromString),
 });
 
+export type SetAuthorityCheckedInfo = Infer<typeof SetAuthorityCheckedInfo>;
+export const SetAuthorityCheckedInfo = type({
+    account: PublicKeyFromString,
+    authority: PublicKeyFromString,
+    newAuthority: PublicKeyFromString,
+});
+
 export type CloseInfo = Infer<typeof CloseInfo>;
 export const CloseInfo = type({
     account: PublicKeyFromString,
@@ -72,6 +77,7 @@ export const UpgradeableBpfLoaderInstructionType = enums([
     'deployWithMaxDataLen',
     'upgrade',
     'setAuthority',
+    'setAuthorityChecked',
     'close',
     'extendProgram',
 ]);

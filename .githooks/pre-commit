@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+
+# Lint + format staged files only. Full pipeline still runs on pre-push.
+staged() {
+  git diff --cached --name-only --diff-filter=ACMR -z -- \
+    '*.ts' '*.tsx' '*.mts' '*.mjs' '*.cjs' '*.js'
+}
+
+if [ -n "$(staged)" ]; then
+  staged | xargs -0 corepack pnpm pretty:format || exit 1
+  staged | xargs -0 corepack pnpm eslint:lint || exit 1
+  # Packages are upstream of the app, so their failures surface before the app specs they'd explain.
+  corepack pnpm test:packages:changed || exit 1
+  staged | xargs -0 corepack pnpm test:changed || exit 1
+fi

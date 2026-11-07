@@ -1,0 +1,80 @@
+{
+    "name": "@explorer/entity-inspector",
+    "version": "0.0.0",
+    "private": true,
+    "files": [
+        "dist"
+    ],
+    "type": "module",
+    "sideEffects": false,
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
+        },
+        "./telemetry/server": {
+            "types": "./dist/telemetry/server.d.ts",
+            "import": "./dist/telemetry/server.js",
+            "default": "./dist/telemetry/server.js"
+        },
+        "./telemetry/providers/ga4": {
+            "types": "./dist/telemetry/providers/ga4.d.ts",
+            "import": "./dist/telemetry/providers/ga4.js",
+            "default": "./dist/telemetry/providers/ga4.js"
+        },
+        "./verification": {
+            "types": "./dist/verification/index.d.ts",
+            "import": "./dist/verification/index.js",
+            "default": "./dist/verification/index.js"
+        },
+        "./constants": {
+            "types": "./dist/shared/constants.d.ts",
+            "import": "./dist/shared/constants.js",
+            "default": "./dist/shared/constants.js"
+        }
+    },
+    "scripts": {
+        "prebuild": "rm -rf dist",
+        "build": "tsc -p tsconfig.build.json",
+        "format": "pnpm run format:md && oxfmt --check .",
+        "format:fix": "prettier --write '**/*.md' && oxfmt .",
+        "format:md": "prettier --check '**/*.md'",
+        "lint": "oxlint && pnpm run format",
+        "lint:fix": "oxlint --fix",
+        "pretest": "pnpm run build",
+        "test": "pnpm run typecheck && pnpm run test:coverage && pnpm run test:treeshakability && pnpm run test:node-esm",
+        "test:changed": "git diff --cached --name-only --diff-filter=ACMR -z --relative -- . | xargs -0 -r vitest related --run",
+        "test:coverage": "vitest run --config vitest.coverage.config.ts",
+        "test:node-esm": "for entry in dist/index.js dist/telemetry/server.js dist/telemetry/providers/ga4.js dist/verification/index.js; do node --input-type=module -e \"import('./$entry')\" || exit 1; done",
+        "test:treeshakability": "for file in dist/index.js dist/telemetry/server.js dist/telemetry/providers/ga4.js dist/verification/index.js; do agadoo $file || exit 1; done",
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@explorer/idl-decode": "workspace:*",
+        "@explorer/parsers": "workspace:*",
+        "@explorer/utils": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.32.0",
+        "@noble/hashes": "1.5.0",
+        "@solana-program/address-lookup-table": "0.14.1",
+        "@solana-program/loader-v3": "0.6.0",
+        "@solana-program/program-metadata": "0.9.1",
+        "@solana-program/system": "0.14.0",
+        "@solana-program/token": "0.16.0",
+        "@solana-program/token-2022": "0.16.0",
+        "@solana/attestation": "2.1.0",
+        "@solana/kit": "8.3.0",
+        "zod": "4.3.6"
+    },
+    "devDependencies": {
+        "@sentry/core": "10.75.2",
+        "@vitest/coverage-v8": "catalog:vitest",
+        "agadoo": "^3.0.0",
+        "oxfmt": "catalog:oxc",
+        "oxlint": "catalog:oxc",
+        "prettier": "catalog:tooling",
+        "typescript": "catalog:tooling",
+        "vitest": "catalog:vitest"
+    }
+}

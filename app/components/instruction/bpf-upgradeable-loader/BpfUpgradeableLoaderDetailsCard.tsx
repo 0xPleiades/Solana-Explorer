@@ -1,101 +1,78 @@
-import { Address } from '@components/common/Address';
-import { ParsedInstruction, ParsedTransaction, PublicKey, SignatureResult } from '@solana/web3.js';
-import { camelToTitleCase } from '@utils/index';
+import {
+    address,
+    InstructionCardView,
+    type InstructionField,
+    InstructionFields,
+    type InstructionNode,
+    preformatted,
+    text,
+    UnknownDetailsCard,
+} from '@entities/instruction-card';
+import { PublicKey } from '@solana/web3.js';
+import { camelToTitleCase, wrap } from '@utils/index';
 import { ParsedInfo } from '@validators/index';
-import React from 'react';
-import { create, Struct } from 'superstruct';
+import { create, is } from 'superstruct';
 
-import { InstructionCard } from '../InstructionCard';
-import { UnknownDetailsCard } from '../UnknownDetailsCard';
 import {
     CloseInfo,
     DeployWithMaxDataLenInfo,
     ExtendProgramInfo,
     InitializeBufferInfo,
+    SetAuthorityCheckedInfo,
     SetAuthorityInfo,
+    UpgradeableBpfLoaderInstructionType,
     UpgradeInfo,
     WriteInfo,
 } from './types';
 
 type DetailsProps = {
-    tx: ParsedTransaction;
-    ix: ParsedInstruction;
-    index: number;
-    result: SignatureResult;
-    innerCards?: JSX.Element[];
-    childIndex?: number;
+    node: InstructionNode;
+    parsed: unknown;
 };
 
-export function BpfUpgradeableLoaderDetailsCard(props: DetailsProps) {
-    try {
-        const parsed = create(props.ix.parsed, ParsedInfo);
-        switch (parsed.type) {
-            case 'initializeBuffer': {
-                return renderDetails<InitializeBufferInfo>(props, parsed, InitializeBufferInfo);
-            }
-            case 'write': {
-                return renderDetails<WriteInfo>(props, parsed, WriteInfo);
-            }
-            case 'deployWithMaxDataLen': {
-                return renderDetails<DeployWithMaxDataLenInfo>(props, parsed, DeployWithMaxDataLenInfo);
-            }
-            case 'upgrade': {
-                return renderDetails<UpgradeInfo>(props, parsed, UpgradeInfo);
-            }
-            case 'setAuthority': {
-                return renderDetails<SetAuthorityInfo>(props, parsed, SetAuthorityInfo);
-            }
-            case 'close': {
-                return renderDetails<CloseInfo>(props, parsed, CloseInfo);
-            }
-            case 'extendProgram': {
-                return renderDetails<ExtendProgramInfo>(props, parsed, ExtendProgramInfo);
-            }
-            default:
-                return <UnknownDetailsCard {...props} />;
-        }
-    } catch (error) {
-        console.error(error, {
-            signature: props.tx.signatures[0],
-        });
-        return <UnknownDetailsCard {...props} />;
+export function BpfUpgradeableLoaderDetailsCard({ node, parsed }: DetailsProps) {
+    const parsedInfo = create(parsed, ParsedInfo);
+    if (!is(parsedInfo.type, UpgradeableBpfLoaderInstructionType)) {
+        return <UnknownDetailsCard node={node} />;
+    }
+    const info = decodeInfo(parsedInfo.type, parsedInfo.info);
+
+    return (
+        <InstructionCardView node={node} title={`BPF Upgradeable Loader: ${camelToTitleCase(parsedInfo.type)}`}>
+            <InstructionFields programId={node.programId} fields={infoFields(info)} />
+        </InstructionCardView>
+    );
+}
+
+function decodeInfo(type: UpgradeableBpfLoaderInstructionType, info: unknown): object {
+    switch (type) {
+        case 'initializeBuffer':
+            return create(info, InitializeBufferInfo);
+        case 'write':
+            return create(info, WriteInfo);
+        case 'deployWithMaxDataLen':
+            return create(info, DeployWithMaxDataLenInfo);
+        case 'upgrade':
+            return create(info, UpgradeInfo);
+        case 'setAuthority':
+            return create(info, SetAuthorityInfo);
+        case 'setAuthorityChecked':
+            return create(info, SetAuthorityCheckedInfo);
+        case 'close':
+            return create(info, CloseInfo);
+        case 'extendProgram':
+            return create(info, ExtendProgramInfo);
     }
 }
 
-function renderDetails<T extends object>(props: DetailsProps, parsed: ParsedInfo, struct: Struct<T>) {
-    const info = create(parsed.info, struct);
-
-    const attributes: JSX.Element[] = [];
-    for (const entry of Object.entries<any>(info)) {
-        const key = entry[0];
-        let value = entry[1];
-        if (value instanceof PublicKey) {
-            value = <Address pubkey={value} alignRight link />;
-        } else if (key === 'bytes') {
-            value = <pre className="d-inline-block text-start mb-0 data-wrap">{value}</pre>;
-        } else if (value === null) {
-            value = <span className="text-muted">None</span>;
-        }
-
-        attributes.push(
-            <tr key={key}>
-                <td>
-                    {camelToTitleCase(key)} {key === 'bytes' && <span className="text-muted">(Base 64)</span>}
-                </td>
-                <td className="text-lg-end">{value}</td>
-            </tr>
-        );
-    }
-
-    return (
-        <InstructionCard {...props} title={`BPF Upgradeable Loader: ${camelToTitleCase(parsed.type)}`}>
-            <tr>
-                <td>Program</td>
-                <td className="text-lg-end">
-                    <Address pubkey={props.ix.programId} alignRight link />
-                </td>
-            </tr>
-            {attributes}
-        </InstructionCard>
-    );
+function infoFields(info: object): InstructionField[] {
+    return Object.entries(info).flatMap(([key, value]): InstructionField[] => {
+        const label = camelToTitleCase(key);
+        if (value === undefined) return [];
+        if (value === null) return [text(label, '(none)')];
+        if (value instanceof PublicKey) return [address(label, value)];
+        if (key === 'bytes' && typeof value === 'string') return [preformatted(`${label} (Base 64)`, wrap(value, 50))];
+        if (typeof value === 'string' || typeof value === 'number') return [text(label, value)];
+        throw new Error(`BPF Upgradeable Loader field ${key} of type ${typeof value} has no row format`);
+    });
 }

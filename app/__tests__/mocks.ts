@@ -1,48 +1,25 @@
 import {
     Message,
     MessageArgs,
-    MessageCompiledInstruction,
     MessageV0,
     MessageV0Args,
     PublicKey,
+    TransactionMessage,
     VersionedMessage,
 } from '@solana/web3.js';
-import { vi } from 'vitest';
+import { expect } from 'vitest';
 
-// stub a test to not allow passing without tests
-test('stub', () => expect(true).toBeTruthy());
+import { resolveAddressLookupTables } from './mock-resolvers';
 
-vi.mock('next/navigation', () => {
-    const actual = vi.importActual('next/navigation');
-    const cluster = 'mainnet-beta';
-    const customUrl = undefined;
-
-    return {
-        ...actual,
-        usePathname: vi.fn(),
-        useRouter: vi.fn(() => ({
-            push: vi.fn(),
-        })),
-        useSearchParams: vi.fn(() => ({
-            get: (param: string) => {
-                if (param === 'cluster') return cluster;
-                return null;
-            },
-            has: (param: string) => {
-                if (param === 'customUrl' && customUrl) return true;
-                return false;
-            },
-            toString: () => {
-                let clusterString;
-                if (cluster !== 'mainnet-beta') clusterString = `cluster=${cluster}`;
-                if (customUrl) {
-                    return `customUrl=${customUrl}${clusterString ? `&${clusterString}` : ''}`;
-                }
-                return clusterString ?? '';
-            },
-        })),
-    };
-});
+/** Lookup tables resolve from stored copies, so decompiling a stub needs no network. */
+export function decompileStubInstruction(stub: string, index: number, { programId }: { programId: string }) {
+    const message = 'staticAccountKeys' in JSON.parse(stub) ? deserializeMessageV0(stub) : deserializeMessage(stub);
+    const instruction = TransactionMessage.decompile(message, {
+        addressLookupTableAccounts: resolveAddressLookupTables(message.addressTableLookups),
+    }).instructions[index];
+    expect(instruction.programId.toBase58()).toBe(programId);
+    return { instruction, message };
+}
 
 export function deserializeMessage(message: string): VersionedMessage {
     const m = JSON.parse(message) as MessageArgs;
@@ -62,7 +39,7 @@ export function deserializeMessageV0(message: string): VersionedMessage {
                         readonlyIndexes: atl.readonlyIndexes,
                         writableIndexes: atl.writableIndexes,
                     };
-                }
+                },
             ) ?? [],
         compiledInstructions: m.compiledInstructions.map(
             (ci: {
@@ -82,7 +59,7 @@ export function deserializeMessageV0(message: string): VersionedMessage {
                     data: data,
                     programIdIndex: ci.programIdIndex,
                 };
-            }
+            },
         ),
         header: m.header,
         recentBlockhash: m.recentBlockhash,
@@ -91,18 +68,4 @@ export function deserializeMessageV0(message: string): VersionedMessage {
     const vm = new MessageV0(messageArgs);
 
     return vm;
-}
-
-export function deserializeInstruction(instruction: string): MessageCompiledInstruction {
-    const data = JSON.parse(instruction);
-    data.data = Uint8Array.from(data.data.data);
-
-    return data;
-}
-
-export async function sleep(ms?: number): Promise<void> {
-    const FALLBACK_TIMEOUT_MS = 2000;
-    const timeoutMs =
-        ms || (process.env.TEST_SERIAL_TIMEOUT ? Number(process.env.TEST_SERIAL_TIMEOUT.trim()) : FALLBACK_TIMEOUT_MS);
-    return await new Promise(resolve => setTimeout(resolve, timeoutMs));
 }

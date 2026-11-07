@@ -25,7 +25,7 @@
 ## Related Issues
 
 <!-- Link to any related issues this PR addresses -->
-<!-- Example: Fixes #123, Addresses #456 -->
+<!-- Example: Fixes #<issue-number>, Addresses #<issue-number> -->
 
 ## Checklist
 
@@ -33,10 +33,11 @@
 
 -   [ ] My code follows the project's style guidelines
 -   [ ] I have added tests that prove my fix/feature works
--   [ ] All tests pass locally and in CI
+-   [ ] All checks pass locally (`pnpm test`, `pnpm lint`, `pnpm typecheck`)
 -   [ ] I have updated documentation as needed
--   [ ] CI/CD checks pass
--   [ ] I have included screenshots for protocol screens (if applicable)
+-   [ ] I have run `build:info` script to update build information
+-   [ ] CI/CD checks pass on the PR
+-   [ ] Screenshots included — required for protocol screens, recommended for other UI changes
 -   [ ] For security-related features, I have included links to related information
 
 ## Additional Notes

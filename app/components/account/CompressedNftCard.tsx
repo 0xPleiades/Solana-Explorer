@@ -1,81 +1,66 @@
+import { AccountCard } from '@features/account';
 import { Account } from '@providers/accounts';
 import { PublicKey } from '@solana/web3.js';
-import { createRef, Suspense } from 'react';
-import { ChevronDown, ExternalLink } from 'react-feather';
-import useAsyncEffect from 'use-async-effect';
+import { Suspense } from 'react';
+import { ChevronDown, ExternalLink as ExternalLinkIcon } from 'react-feather';
 
+import { Badge } from '@/app/components/shared/ui/badge';
+import { Button } from '@/app/components/shared/ui/button';
+import { Dropdown, DropdownMenu, DropdownToggle } from '@/app/components/shared/ui/dropdown';
+import { ExternalLink } from '@/app/components/shared/ui/external-link';
 import { useCluster } from '@/app/providers/cluster';
 import { CompressedNft, useCompressedNft, useMetadataJsonLink } from '@/app/providers/compressed-nft';
+import { getProxiedUri } from '@/app/shared/lib/metadata-proxy';
+import { type KeyValueRow, KeyValueRows } from '@/app/shared/ui/key-value';
 
 import { Address } from '../common/Address';
 import { InfoTooltip } from '../common/InfoTooltip';
 import { LoadingArtPlaceholder } from '../common/LoadingArtPlaceholder';
-import { ArtContent } from '../common/NFTArt';
-import { TableCardBody } from '../common/TableCardBody';
+import { NFTImageContent } from '../common/NFTArt';
 import { getCreatorDropdownItems, getIsMutablePill, getVerifiedCollectionPill } from './MetaplexNFTHeader';
 import { UnknownAccountCard } from './UnknownAccountCard';
 
 export function CompressedNftCard({ account }: { account: Account }) {
     const { url } = useCluster();
     const compressedNft = useCompressedNft({ address: account.pubkey.toString(), url });
-    if (!compressedNft) return <UnknownAccountCard account={account} />;
+    // getAsset resolves fungible tokens too, and those have no single owner: DAS returns an empty
+    // string, which is not a public key. Without an owner this card has nothing to describe.
+    if (!compressedNft?.ownership.owner) return <UnknownAccountCard account={account} />;
 
     const collectionGroup = compressedNft.grouping.find(group => group.group_key === 'collection');
     const updateAuthority = compressedNft.authorities.find(authority => authority.scopes.includes('full'))?.address;
 
+    const rows: KeyValueRow[] = [
+        { label: 'Address', value: <Address pubkey={account.pubkey} raw /> },
+        { label: 'Owner', value: <Address pubkey={new PublicKey(compressedNft.ownership.owner)} link /> },
+        {
+            label: 'Verified Collection Address',
+            value: collectionGroup ? <Address pubkey={new PublicKey(collectionGroup.group_value)} link /> : 'None',
+        },
+        {
+            label: 'Update Authority',
+            value: updateAuthority ? <Address pubkey={new PublicKey(updateAuthority)} link /> : 'None',
+        },
+        {
+            label: 'Website',
+            value: (
+                <ExternalLink href={compressedNft.content.links.external_url}>
+                    {compressedNft.content.links.external_url}
+                    <ExternalLinkIcon className="ml-1.5 align-text-top" size={13} />
+                </ExternalLink>
+            ),
+        },
+        { label: 'Seller Fee', value: `${compressedNft.royalty.basis_points / 100}%` },
+    ];
+
     return (
-        <div className="card">
-            <div className="card-header">
-                <h3 className="card-header-title mb-0 d-flex align-items-center">Overview</h3>
-            </div>
-            <TableCardBody>
-                <tr>
-                    <td>Address</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={account.pubkey} alignRight raw />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Owner</td>
-                    <td className="text-lg-end">
-                        <Address pubkey={new PublicKey(compressedNft.ownership.owner)} alignRight link />
-                    </td>
-                </tr>
-                <tr>
-                    <td>Verified Collection Address</td>
-                    <td className="text-lg-end">
-                        {collectionGroup ? (
-                            <Address pubkey={new PublicKey(collectionGroup.group_value)} alignRight link />
-                        ) : (
-                            'None'
-                        )}
-                    </td>
-                </tr>
-                <tr>
-                    <td>Update Authority</td>
-                    <td className="text-lg-end">
-                        {updateAuthority ? <Address pubkey={new PublicKey(updateAuthority)} alignRight link /> : 'None'}
-                    </td>
-                </tr>
-                <tr>
-                    <td>Website</td>
-                    <td className="text-lg-end">
-                        <a rel="noopener noreferrer" target="_blank" href={compressedNft.content.links.external_url}>
-                            {compressedNft.content.links.external_url}
-                            <ExternalLink className="align-text-top ms-2" size={13} />
-                        </a>
-                    </td>
-                </tr>
-                <tr>
-                    <td>Seller Fee</td>
-                    <td className="text-lg-end">{`${compressedNft.royalty.basis_points / 100}%`}</td>
-                </tr>
-            </TableCardBody>
-        </div>
+        <AccountCard title="Overview" account={account}>
+            <KeyValueRows rows={rows} />
+        </AccountCard>
     );
 }
 
-export function CompressedNftAccountHeader({ account }: { account: Account }) {
+export function CompressedNftAccountHeader({ account, fallback }: { account: Account; fallback?: React.ReactElement }) {
     const { url } = useCluster();
     const compressedNft = useCompressedNft({ address: account.pubkey.toString(), url });
 
@@ -86,78 +71,83 @@ export function CompressedNftAccountHeader({ account }: { account: Account }) {
             </Suspense>
         );
     }
-    return <div />;
+    return fallback || <div />;
 }
 
 export function CompressedNFTHeader({ compressedNft }: { compressedNft: CompressedNft }) {
-    const metadataJson = useMetadataJsonLink(compressedNft.content.json_uri);
-    const dropdownRef = createRef<HTMLButtonElement>();
-
-    useAsyncEffect(
-        async isMounted => {
-            if (!dropdownRef.current) {
-                return;
-            }
-            const Dropdown = (await import('bootstrap/js/dist/dropdown')).default;
-            if (!isMounted || !dropdownRef.current) {
-                return;
-            }
-            return new Dropdown(dropdownRef.current);
-        },
-        dropdown => {
-            if (dropdown) {
-                dropdown.dispose();
-            }
-        },
-        [dropdownRef]
-    );
+    // Empty strings are possible, so the check is necessary.
+    const proxiedURI = compressedNft.content.json_uri ? getProxiedUri(compressedNft.content.json_uri) : null;
+    const metadataJson = useMetadataJsonLink(proxiedURI);
+    const isCompressed = compressedNft.compression.compressed;
+    const hasCollection = compressedNft.grouping.some(group => group.group_key === 'collection');
 
     return (
-        <div className="row">
-            <div className="col-auto ms-2 d-flex align-items-center">
-                <ArtContent pubkey={compressedNft.id} data={metadataJson} />
+        <div className="-mx-3 flex flex-wrap">
+            <div className="ml-1.5 flex flex-none items-center px-3">
+                <NFTImageContent uri={metadataJson?.image} />
             </div>
-            <div className="col mb-3 ms-0.5 mt-3">
-                {<h6 className="header-pretitle ms-1">Metaplex Compressed NFT</h6>}
-                <div className="d-flex align-items-center">
-                    <h2 className="header-title ms-1 align-items-center no-overflow-with-ellipsis">
+            <div className="mb-3 mt-3 min-w-0 flex-1 px-3">
+                <h6 className="ml-[3px] uppercase tracking-[0.08em] text-dk-gray-700">
+                    {getAssetTypeLabel(compressedNft)}
+                </h6>
+                <div className="flex items-center">
+                    <h2 className="mb-0 ml-[3px] items-center overflow-hidden text-ellipsis whitespace-nowrap">
                         {compressedNft.content.metadata.name !== ''
                             ? compressedNft.content.metadata.name
-                            : 'No NFT name was found'}
+                            : 'No name was found'}
                     </h2>
-                    {getVerifiedCollectionPill()}
+                    {hasCollection ? getVerifiedCollectionPill() : null}
                 </div>
-                <h4 className="header-pretitle ms-1 mt-1 no-overflow-with-ellipsis">
+                <h4 className="ml-[3px] mt-[3px] overflow-hidden text-ellipsis whitespace-nowrap uppercase tracking-[0.08em] text-dk-gray-700">
                     {compressedNft.content.metadata.symbol !== ''
                         ? compressedNft.content.metadata.symbol
                         : 'No Symbol was found'}
                 </h4>
-                <div className="mb-2 mt-2">{getCompressedNftPill()}</div>
-                <div className="mb-3 mt-2">{getIsMutablePill(compressedNft.mutable)}</div>
-                <div className="btn-group">
-                    <button
-                        className="btn btn-dark btn-sm creators-dropdown-button-width"
-                        type="button"
-                        aria-haspopup="true"
-                        aria-expanded="false"
-                        data-bs-toggle="dropdown"
-                        ref={dropdownRef}
-                    >
-                        Creators <ChevronDown size={15} className="align-text-top" />
-                    </button>
-                    <div className="dropdown-menu mt-2">{getCreatorDropdownItems(compressedNft.creators)}</div>
-                </div>
+                {isCompressed && <div className="mb-1.5 mt-1.5">{getCompressedNftPill()}</div>}
+                <div className="mb-3 mt-1.5">{getIsMutablePill(compressedNft.mutable)}</div>
+                <Dropdown className="inline-flex">
+                    <DropdownToggle asChild>
+                        <Button ui="dashkit" variant="dark" size="sm" className="w-[150px]" type="button">
+                            Creators <ChevronDown size={15} className="align-text-top" />
+                        </Button>
+                    </DropdownToggle>
+                    <DropdownMenu className="mt-1.5">{getCreatorDropdownItems(compressedNft.creators)}</DropdownMenu>
+                </Dropdown>
             </div>
         </div>
     );
+}
+
+// getAsset resolves any indexed asset, not just compressed NFTs, so the type shown has to follow
+// the response instead of assuming compression.
+const ASSET_TYPE_LABELS: Record<string, string> = {
+    Custom: 'Custom Asset',
+    Executable: 'Executable Asset',
+    FungibleAsset: 'Fungible Asset',
+    FungibleToken: 'Token',
+    Identity: 'Identity Asset',
+    LEGACY_NFT: 'Metaplex NFT',
+    MplCoreAsset: 'Metaplex Core Asset',
+    MplCoreCollection: 'Metaplex Core Collection',
+    ProgrammableNFT: 'Metaplex Programmable NFT',
+    V1_NFT: 'Metaplex NFT',
+    V1_PRINT: 'Metaplex NFT Print',
+    V2_NFT: 'Metaplex NFT',
+};
+
+export function getAssetTypeLabel(asset: CompressedNft): string {
+    if (asset.compression.compressed) return 'Metaplex Compressed NFT';
+    return ASSET_TYPE_LABELS[asset.interface] ?? 'Asset';
 }
 
 function getCompressedNftPill() {
     const onchainVerifiedToolTip =
         'This NFT does not have a corresponding account, but uses verified ledger data to allow for transfers and trades. The existence of this tag ensures that the compressed NFT is verifiably up-to-date with the chain.';
     return (
-        <div className={'d-inline-flex align-items-center ms-2'}>
-            <span className="badge badge-pill bg-dark">{'Compressed'}</span>
+        <div className="ml-1.5 inline-flex items-center">
+            <Badge ui="dashkit" variant="dark" tone="solid">
+                Compressed
+            </Badge>
             <InfoTooltip bottom text={onchainVerifiedToolTip} />
         </div>
     );

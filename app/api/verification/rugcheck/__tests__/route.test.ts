@@ -1,0 +1,119 @@
+import { vi } from 'vitest';
+
+import { Logger } from '@/app/shared/lib/logger';
+
+import { GET } from '../[mintAddress]/route';
+
+const VALID_MINT = 'B61SyRxF2b8JwSLZHgEUF6rtn6NUikkrK1EMEgP6nhXW';
+
+const fetchMock = vi.fn();
+vi.stubGlobal('fetch', fetchMock);
+
+describe('Rugcheck API Route', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+        process.env = { ...originalEnv, RUGCHECK_API_KEY: 'test-key' };
+    });
+
+    afterEach(() => {
+        process.env = originalEnv;
+        vi.clearAllMocks();
+    });
+
+    it('should return 400 for an invalid mint address', async () => {
+        const response = await callRoute('not-a-valid-key');
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: 'Invalid mint address' });
+    });
+
+    it('should return 500 when API key is missing', async () => {
+        delete process.env.RUGCHECK_API_KEY;
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({ error: 'Rugcheck API is misconfigured' });
+    });
+
+    it.each([
+        [404, 'not found'],
+        [422, 'unable to generate report'],
+        [404, 'invalid token mint'],
+    ])('should return %i when rugcheck responds with 400 (%s)', async (expectedStatus, error) => {
+        mockFetchResponse(400, { error });
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(expectedStatus);
+        expect(await response.json()).toEqual({ error: 'No rugcheck data available' });
+        expect(Logger.panic).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 and report to sentry when rugcheck responds with 400 and unexpected body', async () => {
+        mockFetchResponse(400, { error: 'bad request' });
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(400);
+        expect(Logger.panic).toHaveBeenCalled();
+    });
+
+    it('should return 404 when rugcheck responds with 404', async () => {
+        mockFetchResponse(404);
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(404);
+        expect(await response.json()).toEqual({ error: 'No rugcheck data available' });
+    });
+
+    it('should return 429 and log to sentry when rate limited', async () => {
+        mockFetchResponse(429);
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(429);
+        expect(Logger.warn).toHaveBeenCalledWith('[api:rugcheck] Rate limit exceeded', { sentry: true });
+    });
+
+    it('should return 502 when response schema is invalid', async () => {
+        mockFetchResponse(200, { unexpected: 'shape' });
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(502);
+        expect(await response.json()).toEqual({ error: 'Invalid response from rugcheck API' });
+    });
+
+    it('should return score on success', async () => {
+        mockFetchResponse(200, { score_normalised: 85 });
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ score: 85 });
+    });
+
+    it('should return 500 when fetch throws', async () => {
+        fetchMock.mockRejectedValueOnce(new Error('Network error'));
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({ error: 'Failed to fetch rugcheck data' });
+    });
+
+    it('should return 504 with short negative cache when upstream request times out', async () => {
+        const timeoutError = new DOMException('Signal timed out.', 'TimeoutError');
+        fetchMock.mockRejectedValueOnce(timeoutError);
+        const response = await callRoute(VALID_MINT);
+        expect(response.status).toBe(504);
+        expect(await response.json()).toEqual({ error: 'Upstream request timed out' });
+        expect(response.headers.get('Cache-Control')).toBe('public, max-age=30, s-maxage=30');
+        expect(Logger.warn).toHaveBeenCalledWith('[api:rugcheck] Upstream request timed out', {
+            mintAddress: VALID_MINT,
+            sentry: true,
+        });
+        expect(Logger.panic).not.toHaveBeenCalled();
+    });
+});
+
+function mockFetchResponse(status: number, body: Record<string, unknown> = {}) {
+    const ok = status >= 200 && status < 300;
+    // Cast: tests only stub the surface of Response that the route touches.
+    fetchMock.mockResolvedValueOnce({
+        json: async () => body,
+        ok,
+        status,
+    } as Response);
+}
+
+function callRoute(mintAddress: string) {
+    const request = new Request(`http://localhost:3000/api/verification/rugcheck/${mintAddress}`);
+    return GET(request, { params: Promise.resolve({ mintAddress }) });
+}

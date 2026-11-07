@@ -2,65 +2,273 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, development, 'development-*']
   pull_request:
-    branches: [master]
+  merge_group:
+
+permissions:
+  contents: read
 
 env:
-  # cash folder for pnpm_store, nextjs and playwright later on
-  PW_CACHE_AFFIX: pw
-  PW_CACHE_FOLDER: ~/.cache/ms-playwright
+  PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+  SENTRY_TELEMETRY_DISABLE: true
+  STORYBOOK_DISABLE_TELEMETRY: 1
+  OPENSPEC_TELEMETRY: 0
 
 jobs:
-  Build-And-Test:
+  # Job to read Node version from .nvmrc
+  read-nvmrc:
+    runs-on: ubuntu-latest
+    outputs:
+      node-version: ${{ steps.nvmrc.outputs.NODE_VERSION }}
+      shard-list: ${{ steps.shards.outputs.list }}
+      shard-total: ${{ steps.shards.outputs.total }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .nvmrc
+          sparse-checkout-cone-mode: false
+
+      - name: Read .nvmrc
+        id: nvmrc
+        run: echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+
+      # One source for the shard count: `strategy.matrix` cannot read `env`, and a matrix that
+      # disagrees with the `--shard` divisor passes green while silently skipping the missing slices.
+      - name: Plan specs shards
+        id: shards
+        run: |
+          total=2
+          echo "total=$total" >> $GITHUB_OUTPUT
+          echo "list=[$(seq -s, 1 $total)]" >> $GITHUB_OUTPUT
+
+  Format-And-Lint:
+    needs: read-nvmrc
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
+        with:
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
+
+      - name: Format
+        run: pnpm format:ci
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: OpenSpec
+        run: pnpm openspec:validate
+
+  Build:
+    needs: read-nvmrc
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Additional Cache
+        uses: ./.github/actions/build-cache
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
+        with:
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
+
+      # Mandatory, and the only `next build` in CI. A production build that breaks fails here or
+      # nowhere, so this step must not be weakened to typegen.
+      - name: Build
+        run: pnpm build
+
+      - name: Generate build info
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        run: pnpm build:info --skip-build .next/BUILD.fresh.md
+
+      - name: Render bundle change report
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        run: |
+          ./scripts/build-info-report.sh ${{ github.base_ref }}
+          cat .next/bundle-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Fork PRs get a read-only token here, so build-info-comment.yaml posts the PR comment from this artifact.
+      - name: Save bundle change report
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-info-comment
+          path: .next/bundle-report.md
+
+      # Last on purpose: the report above uploads even when this gate fails.
+      - name: Check bench/BUILD.md freshness
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        run: pnpm exec tsx scripts/build-info-diff.ts check bench/BUILD.md .next/BUILD.fresh.md
+
+  Test-Packages:
+    needs: read-nvmrc
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
+        with:
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
+
+      - name: Build packages
+        run: pnpm build:packages
+
+      - name: Test packages
+        run: pnpm test:packages
+
+  Specs-Shards:
+    needs: read-nvmrc
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     strategy:
+      fail-fast: false
       matrix:
-        node-version: ['20.x']
+        shard: ${{ fromJSON(needs.read-nvmrc.outputs.shard-list) }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
+        with:
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
+
+      # Specs resolve sibling packages through dist. No `next build`: nothing here reads the generated
+      # route types now that the specs project no longer typechecks.
+      - name: Build packages
+        run: pnpm build:packages
+
+      - name: Test specs (shard ${{ matrix.shard }}/${{ needs.read-nvmrc.outputs.shard-total }})
+        run: pnpm test:ci:specs --shard=${{ matrix.shard }}/${{ needs.read-nvmrc.outputs.shard-total }}
+
+  Security-Audit:
+    # Independent of the build: the audit resolves the tree from pnpm-lock.yaml and queries
+    # the registry, so it runs in parallel for faster, self-contained feedback.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install package manager
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      # `pnpm audit` resolves the tree from pnpm-lock.yaml and queries the registry — no
+      # `pnpm install`/node_modules needed, so this job skips install and caching entirely.
+      # Fails on any critical advisory; lower severities are reported but do not block.
+      # Baseline unfixable dev-only advisories via `auditConfig.ignoreGhsas` in
+      # pnpm-workspace.yaml rather than lowering this gate.
+      - name: Audit dependencies
+        run: pnpm audit:ci
+
+  Sitemap-Check:
+    needs: read-nvmrc
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
         with:
-          version: 8.6.6
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
+      # scripts/update-sitemap.ts imports app/utils/programs.ts, which imports the built decoder packages.
+      - name: Build workspace packages
+        run: pnpm build:packages
 
-      - name: Setup pnpm config
-        run: pnpm config set store-dir $PNPM_CACHE_FOLDER
+      - name: Generate sitemap
+        run: pnpm exec tsx scripts/update-sitemap.ts
 
-      - name: Setup Cache
-        uses: actions/cache@v4
-        id: pnpm_store_cache
-        with:
-          path: |
-            ${{ env.PW_CACHE_FOLDER }}
-            ${{ github.workspace }}/.next/cache
-          key: ${{ runner.os }}-${{ env.PW_CACHE_AFFIX }}-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/.browserslistrc') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ env.PW_CACHE_AFFIX }}-
-            ${{ runner.os }}-${{ env.PW_CACHE_AFFIX }}-${{ hashFiles('**/pnpm-lock.yaml') }}-
+      - name: Check for sitemap drift
+        run: git diff --exit-code public/sitemap.xml public/default-sitemap.xml public/accounts-sitemap.xml
 
-      - name: Install dependencies
-        run: pnpm install
+  Storybook-Smoke-Tests:
+    needs: read-nvmrc
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
 
-      - name: Build
-        run: pnpm build
+    # The browser-mode sweep has repeatedly died on a full root partition ("No space left on device").
+    # Browsers and the Vite dep-optimize cache live on the runner's ~65 GB /mnt scratch disk
+    # (PLAYWRIGHT_BROWSERS_PATH / VITE_CACHE_PATH); the pnpm store stays on / so node_modules keeps hardlinking.
+    env:
+      PLAYWRIGHT_CACHE_AFFIX: pw-mnt
+      PLAYWRIGHT_BROWSERS_PATH: /mnt/cache/ms-playwright
+      VITE_CACHE_PATH: /mnt/cache/vite
 
-      - name: Code-style
-        run: pnpm format:ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Test
-        env:
-          TEST_SERIAL_TIMEOUT: ${{ vars.TEST_SERIAL_TIMEOUT }}
+      - name: Prepare cache dirs on the scratch disk
         run: |
-          pnpm test:ci
+          sudo mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" "$VITE_CACHE_PATH"
+          sudo chown -R "$(id -u):$(id -g)" "$PLAYWRIGHT_BROWSERS_PATH" "$VITE_CACHE_PATH"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: playwright_cache
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-${{ env.PLAYWRIGHT_CACHE_AFFIX }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.PLAYWRIGHT_CACHE_AFFIX }}-
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/pnpm-setup
+        with:
+          node-version: ${{ needs.read-nvmrc.outputs.node-version }}
+
+      # No-op while setup-node restores by exact key only; kept in case the store ever regains restore-keys.
+      - name: Prune pnpm store
+        run: pnpm store prune
+
+      - name: Install Playwright browsers
+        if: steps.playwright_cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps only
+        if: steps.playwright_cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Run Storybook smoke tests
+        env:
+          STORYBOOK_DISABLE_TELEMETRY: ${{ env.STORYBOOK_DISABLE_TELEMETRY }}
+        run: pnpm test:sb
+
+  # The `master` branch ruleset requires this job to pass before a merge.
+  # A job blocks a merge only if it is listed in `needs`.
+  CI-Result:
+    # Without `always()`, GitHub skips this job when any job in `needs` fails.
+    # A skipped required check does not block a merge, so the broken PR would merge.
+    if: always()
+    needs: [read-nvmrc, Format-And-Lint, Build, Test-Packages, Specs-Shards, Security-Audit, Sitemap-Check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if a needed job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

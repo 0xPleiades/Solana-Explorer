@@ -5,11 +5,6 @@ import { HumanizeDuration, HumanizeDurationLanguage } from 'humanize-duration-ts
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 export const MICRO_LAMPORTS_PER_LAMPORT = 1_000_000;
 
-export const NUM_TICKS_PER_SECOND = 160;
-export const DEFAULT_TICKS_PER_SLOT = 64;
-export const NUM_SLOTS_PER_SECOND = NUM_TICKS_PER_SECOND / DEFAULT_TICKS_PER_SLOT;
-export const MS_PER_SLOT = 1000 / NUM_SLOTS_PER_SECOND;
-
 export const INNER_INSTRUCTIONS_START_SLOT = 46915769;
 
 export type SignatureProps = {
@@ -30,7 +25,7 @@ export function microLamportsToLamports(microLamports: number | bigint): number 
 
     const microLamportsString = microLamports.toString().padStart(7, '0');
     const splitIndex = microLamportsString.length - 6;
-    const lamportString = microLamportsString.slice(0, splitIndex) + '.' + microLamportsString.slice(splitIndex);
+    const lamportString = `${microLamportsString.slice(0, splitIndex)}.${microLamportsString.slice(splitIndex)}`;
     return parseFloat(lamportString);
 }
 
@@ -52,7 +47,7 @@ export function lamportsToSol(lamports: number | bigint): number {
     const absLamports = lamports < 0 ? -lamports : lamports;
     const lamportsString = absLamports.toString(10).padStart(10, '0');
     const splitIndex = lamportsString.length - 9;
-    const solString = lamportsString.slice(0, splitIndex) + '.' + lamportsString.slice(splitIndex);
+    const solString = `${lamportsString.slice(0, splitIndex)}.${lamportsString.slice(splitIndex)}`;
     return signMultiplier * parseFloat(solString);
 }
 
@@ -62,6 +57,7 @@ export function lamportsToSolString(lamports: number | bigint, maximumFractionDi
 }
 
 export function numberWithSeparator(s: string) {
+    // eslint-disable-next-line no-restricted-syntax -- insert thousands separator
     return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
@@ -86,7 +82,8 @@ HUMANIZER.addLanguage('short', {
     y: () => 'y',
 });
 
-export function slotsToHumanString(slots: number, slotTime = MS_PER_SLOT): string {
+/** `slotTime` has no default: clusters run at different rates, and only measurement gives the rate. */
+export function slotsToHumanString(slots: number, slotTime: number): string {
     return HUMANIZER.humanize(slots * slotTime);
 }
 
@@ -100,11 +97,13 @@ export function wrap(input: string, length: number): string {
 }
 
 export function camelToTitleCase(str: string): string {
+    // eslint-disable-next-line no-restricted-syntax -- insert space before uppercase letters
     const result = str.replace(/([A-Z])/g, ' $1');
     return result.charAt(0).toUpperCase() + result.slice(1);
 }
 
 export function snakeToTitleCase(str: string): string {
+    // eslint-disable-next-line no-restricted-syntax -- convert snake_case to Title Case
     const result = str.replace(/([-_]\w)/g, g => ` ${g[1].toUpperCase()}`);
     return result.charAt(0).toUpperCase() + result.slice(1);
 }
@@ -116,7 +115,7 @@ export function snakeToPascal(string: string) {
             snake
                 .split('_')
                 .map(substr => substr.charAt(0).toUpperCase() + substr.slice(1))
-                .join('')
+                .join(''),
         )
         .join('/');
 }
@@ -127,20 +126,22 @@ export function capitalizeFirstLetter(input: string) {
 
 export function abbreviatedNumber(value: number, fixed = 1) {
     if (value < 1e3) return String(value);
-    if (value >= 1e3 && value < 1e6) return +(value / 1e3).toFixed(fixed) + 'K';
-    if (value >= 1e6 && value < 1e9) return +(value / 1e6).toFixed(fixed) + 'M';
-    if (value >= 1e9 && value < 1e12) return +(value / 1e9).toFixed(fixed) + 'B';
-    if (value >= 1e12) return +(value / 1e12).toFixed(fixed) + 'T';
+    if (value >= 1e3 && value < 1e6) return `${+(value / 1e3).toFixed(fixed)}K`;
+    if (value >= 1e6 && value < 1e9) return `${+(value / 1e6).toFixed(fixed)}M`;
+    if (value >= 1e9 && value < 1e12) return `${+(value / 1e9).toFixed(fixed)}B`;
+    if (value >= 1e12) return `${+(value / 1e12).toFixed(fixed)}T`;
+}
+
+type PluralUnit = 'account' | 'hour' | 'instruction' | 'second';
+export function pluralWord(n: number | bigint, unit: PluralUnit): string {
+    const isOne = typeof n === 'bigint' ? n === 1n : n === 1;
+    return isOne ? unit : `${unit}s`;
+}
+
+export function pluralUnits(n: number | bigint, unit: PluralUnit): string {
+    return `${n.toString()} ${pluralWord(n, unit)}`;
 }
 
 export const pubkeyToString = (key: PublicKey | string = '') => {
     return typeof key === 'string' ? key : key.toBase58();
-};
-
-export const getLast = (arr: string[]) => {
-    if (arr.length <= 0) {
-        return undefined;
-    }
-
-    return arr[arr.length - 1];
 };

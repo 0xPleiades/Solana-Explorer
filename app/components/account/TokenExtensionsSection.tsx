@@ -1,17 +1,20 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@components/shared/ui/accordion';
-import { SyntheticEvent, useCallback, useMemo, useRef, useState } from 'react';
-import { Code, ExternalLink } from 'react-feather';
-import ReactJson from 'react-json-view';
+import { useCallback, useMemo, useState } from 'react';
+import { Code, ExternalLink as ExternalLinkIcon } from 'react-feather';
 
+import { SolarizedJsonViewer as ReactJson } from '@/app/components/common/JsonViewer';
 import { TableCardBodyHeaded } from '@/app/components/common/TableCardBody';
 import { Badge } from '@/app/components/shared/ui/badge';
+import { ExternalLink } from '@/app/components/shared/ui/external-link';
 import {
     getAnchorId,
     useTokenExtensionNavigation,
 } from '@/app/features/token-extensions/use-token-extension-navigation';
+import { Card } from '@/app/shared/ui/Card';
+import { BaseTable } from '@/app/shared/ui/Table';
 import { TokenExtension } from '@/app/validators/accounts/token-extension';
 
-import { TokenExtensionBadge } from '../common/TokenExtensionBadge';
+import { TokenExtensionBadge } from './token-extensions/TokenExtensionBadge';
 import { TokenExtensionRow } from './TokenAccountSection';
 import { ParsedTokenExtension } from './types';
 
@@ -28,29 +31,25 @@ export function TokenExtensionsSection({
     parsedExtensions: ParsedTokenExtension[];
     symbol?: string;
 }) {
-    const { activeExtension: selectedExtension, setActiveExtension: setSelectedExtension } =
-        useTokenExtensionNavigation({ uriComponent: `/address/${address}` });
+    const { activeExtension: selectedExtension, navigateToExtension } = useTokenExtensionNavigation({
+        uriComponent: `/address/${address}`,
+    });
 
     const onSelect = useCallback(
         (id: string) => {
-            setSelectedExtension(id === selectedExtension ? undefined : id);
+            navigateToExtension(id);
         },
-        [selectedExtension, setSelectedExtension]
-    );
-
-    // handle accordion item click to change the selected extension
-    const handleSelect = useCallback(
-        (e: SyntheticEvent<HTMLDivElement>) => {
-            const selectedValue = e.currentTarget.dataset.value;
-            if (selectedValue === selectedExtension) {
-                setSelectedExtension(undefined);
-            }
-        },
-        [selectedExtension, setSelectedExtension]
+        [navigateToExtension],
     );
 
     return (
-        <Accordion type="single" value={selectedExtension} collapsible className="e-px-0">
+        <Accordion
+            type="single"
+            value={selectedExtension ?? ''}
+            collapsible
+            className="px-0"
+            onValueChange={value => navigateToExtension(value || undefined)}
+        >
             {parsedExtensions.map(ext => {
                 const extension = extensions.find(({ extension }) => {
                     return extension === ext.extension;
@@ -61,7 +60,7 @@ export function TokenExtensionsSection({
                         id={getAnchorId(ext)}
                         key={ext.extension}
                         value={ext.extension}
-                        onClick={handleSelect}
+                        style={{ scrollMarginTop: 'var(--sticky-header-height, 0px)' }}
                     >
                         {extension && (
                             <TokenExtensionAccordionItem
@@ -93,7 +92,6 @@ function TokenExtensionAccordionItem({
     symbol?: string;
 }) {
     const [showRaw, setShowRaw] = useState(false);
-    const accordionTriggerRef = useRef<HTMLButtonElement>(null);
 
     const handleToggleRaw = useCallback(() => {
         onSelect(parsedExtension.extension);
@@ -106,19 +104,48 @@ function TokenExtensionAccordionItem({
 
     return (
         <>
-            <AccordionTrigger className="e-items-center" ref={accordionTriggerRef}>
-                <ExtensionListItem ext={parsedExtension} onToggleRaw={handleToggleRaw} raw={showRaw} />
-            </AccordionTrigger>
+            <div className="flex items-center justify-between">
+                <AccordionTrigger className="items-baseline">
+                    <ExtensionListItem ext={parsedExtension} />
+                </AccordionTrigger>
+                <div className="flex items-center gap-1">
+                    <button
+                        onClick={handleToggleRaw}
+                        type="button"
+                        className="cursor-pointer border-0 bg-transparent p-0"
+                        aria-label={showRaw ? 'Hide raw data' : 'Show raw data'}
+                        aria-pressed={showRaw}
+                    >
+                        <Badge
+                            className="font-normal text-white"
+                            as="link"
+                            size="sm"
+                            status={showRaw ? 'active' : 'inactive'}
+                            variant="transparent"
+                        >
+                            <Code size={16} /> Raw
+                        </Badge>
+                    </button>
+                    {parsedExtension.externalLinks.map((link, index) => (
+                        <ExternalLink key={index} href={link.url}>
+                            <Badge variant="transparent" size="sm" as="link" className="font-normal text-white">
+                                <ExternalLinkIcon size={16} />
+                                {link.label}
+                            </Badge>
+                        </ExternalLink>
+                    ))}
+                </div>
+            </div>
             <AccordionContent>
                 {!showRaw ? (
-                    <div className="card e-m-4">
+                    <Card ui="dashkit" className="m-4">
                         <TableCardBodyHeaded headerComponent={tableHeaderComponent}>
                             {TokenExtensionRow(extension, undefined, decimals, symbol, 'omit')}
                         </TableCardBodyHeaded>
-                    </div>
+                    </Card>
                 ) : (
-                    <div className="e-p-4">
-                        <ReactJson src={parsedExtension.parsed || {}} theme={'solarized'} style={{ padding: 25 }} />
+                    <div className="p-4">
+                        <ReactJson src={parsedExtension.parsed || {}} style={{ padding: 25 }} />
                     </div>
                 )}
             </AccordionContent>
@@ -128,64 +155,25 @@ function TokenExtensionAccordionItem({
 
 function TokenExtensionStateHeader({ name }: { name: string }) {
     return (
-        <tr>
-            <th className="text-muted w-1">{name}</th>
-            <th className="text-muted"></th>
-        </tr>
+        <BaseTable.Row>
+            <BaseTable.HeaderCell className="w-px text-dk-gray-700">{name}</BaseTable.HeaderCell>
+            <BaseTable.HeaderCell className="text-dk-gray-700"></BaseTable.HeaderCell>
+        </BaseTable.Row>
     );
 }
 
-function ExtensionListItem({
-    ext,
-    onToggleRaw,
-    raw,
-}: {
-    ext: ParsedTokenExtension;
-    onToggleRaw: () => void;
-    raw: boolean;
-}) {
-    const handleToggleRaw = useCallback(
-        (e: React.MouseEvent<HTMLAnchorElement>) => {
-            e.stopPropagation();
-            onToggleRaw();
-        },
-        [onToggleRaw]
-    );
-
+function ExtensionListItem({ ext }: { ext: ParsedTokenExtension }) {
     return (
-        <div className="w-100 e-w-100 text-white e-grid e-grid-cols-12-ext e-items-center e-gap-2 e-text-sm">
+        <div className="w-100 flex w-full items-center gap-2 text-sm text-white">
             {/* Name */}
-            <div className="e-flex e-min-w-80 e-items-center e-gap-2 e-whitespace-nowrap e-font-normal max-sm:e-col-span-6 sm:e-col-span-6 md:e-col-span-6 lg:e-col-span-4 xl:e-col-span-3">
-                <div>{ext.name}</div>
+            <div className="flex min-w-80 items-center gap-2 whitespace-nowrap font-normal">
+                <span>{ext.name}</span>
                 <TokenExtensionBadge extension={ext} />
             </div>
 
             {/* Description */}
-            <span className="e-text-[0.75rem] e-text-[#8E9090] e-underline e-decoration-[#1e2423] max-lg:e-hidden lg:e-col-span-6 lg:e-pl-12 xl:e-col-span-7">
+            <div className="max-lg:hidden flex-1 text-[0.75rem] text-[#8E9090] underline decoration-[#1e2423]">
                 {ext.description ?? null}
-            </span>
-
-            {/* External links badges */}
-            <div className="text-white e-flex e-justify-end e-gap-1 max-sm:e-col-span-6 sm:e-col-span-6 md:e-col-span-6 lg:e-col-span-2 xl:e-col-span-2">
-                <a key="raw" href="javascript:void(0)" onClick={handleToggleRaw}>
-                    <Badge
-                        className="text-white e-font-normal"
-                        as="link"
-                        size="sm"
-                        status={raw ? 'active' : 'inactive'}
-                        variant="transparent"
-                    >
-                        <Code size={16} /> Raw
-                    </Badge>
-                </a>
-                {ext.externalLinks.map((link, index) => (
-                    <a key={index} href={link.url} target="_blank" rel="noopener noreferrer">
-                        <Badge variant="transparent" size="sm" as="link" className="text-white e-font-normal">
-                            <ExternalLink size={16} />
-                            {link.label}
-                        </Badge>
-                    </a>
-                ))}
             </div>
         </div>
     );

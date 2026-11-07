@@ -1,11 +1,17 @@
 'use client';
 
+import { getRpc } from '@entities/cluster';
 import * as Cache from '@providers/cache';
 import { ActionType, FetchStatus } from '@providers/cache';
+import { useCacheEntry } from '@providers/cache-entry';
 import { useCluster } from '@providers/cluster';
-import { Connection, SignatureResult, TransactionConfirmationStatus, TransactionSignature } from '@solana/web3.js';
+import { signature as createSignature } from '@solana/kit';
+import type { SignatureResult, TransactionConfirmationStatus, TransactionSignature } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
 import React from 'react';
+
+import { withNumbersInsteadOfBigInts } from '@/app/shared/lib/bigint-to-number';
+import { Logger } from '@/app/shared/lib/logger';
 
 import { DetailsProvider } from './parsed';
 import { RawDetailsProvider } from './raw';
@@ -14,12 +20,9 @@ export { useTransactionDetails } from './parsed';
 
 export type Confirmations = number | 'max';
 
-export type Timestamp = number | 'unavailable';
-
 export interface TransactionStatusInfo {
     slot: number;
     result: SignatureResult;
-    timestamp: Timestamp;
     confirmations: Confirmations;
     confirmationStatus?: TransactionConfirmationStatus;
 }
@@ -32,8 +35,10 @@ export interface TransactionStatus {
 type State = Cache.State<TransactionStatus>;
 type Dispatch = Cache.Dispatch<TransactionStatus>;
 
-const StateContext = React.createContext<State | undefined>(undefined);
-const DispatchContext = React.createContext<Dispatch | undefined>(undefined);
+export const StateContext: React.Context<State | undefined> = React.createContext<State | undefined>(undefined);
+export const DispatchContext: React.Context<Dispatch | undefined> = React.createContext<Dispatch | undefined>(
+    undefined,
+);
 
 type TransactionsProviderProps = { children: React.ReactNode };
 export function TransactionsProvider({ children }: TransactionsProviderProps) {
@@ -60,7 +65,7 @@ export async function fetchTransactionStatus(
     dispatch: Dispatch,
     signature: TransactionSignature,
     cluster: Cluster,
-    url: string
+    url: string,
 ) {
     dispatch({
         key: signature,
@@ -72,43 +77,31 @@ export async function fetchTransactionStatus(
     let fetchStatus;
     let data;
     try {
-        const connection = new Connection(url);
-        const { value } = await connection.getSignatureStatus(signature, {
-            searchTransactionHistory: true,
-        });
+        const rpc = getRpc(url);
+        const { value: statuses } = await rpc
+            .getSignatureStatuses([createSignature(signature)], {
+                searchTransactionHistory: true,
+            })
+            .send();
+        if (statuses.length !== 1) {
+            throw new Error(`expected 1 signature status, received ${statuses.length}`);
+        }
+        const value = statuses[0] ?? null;
 
         let info = null;
         if (value !== null) {
-            let confirmations: Confirmations;
-            if (typeof value.confirmations === 'number') {
-                confirmations = value.confirmations;
-            } else {
-                confirmations = 'max';
-            }
-
-            let blockTime = null;
-            try {
-                blockTime = await connection.getBlockTime(value.slot);
-            } catch (error) {
-                if (cluster === Cluster.MainnetBeta && confirmations === 'max') {
-                    console.error(error, { slot: `${value.slot}` });
-                }
-            }
-            const timestamp: Timestamp = blockTime !== null ? blockTime : 'unavailable';
-
             info = {
-                confirmationStatus: value.confirmationStatus,
-                confirmations,
-                result: { err: value.err },
-                slot: value.slot,
-                timestamp,
-            };
+                confirmationStatus: value.confirmationStatus ?? undefined,
+                confirmations: typeof value.confirmations === 'bigint' ? Number(value.confirmations) : 'max',
+                result: { err: withNumbersInsteadOfBigInts(value.err) },
+                slot: Number(value.slot),
+            } satisfies TransactionStatusInfo;
         }
         data = { info, signature };
         fetchStatus = FetchStatus.Fetched;
     } catch (error) {
         if (cluster !== Cluster.Custom) {
-            console.error(error, { url });
+            Logger.error(error, { url });
         }
         fetchStatus = FetchStatus.FetchFailed;
     }
@@ -123,7 +116,7 @@ export async function fetchTransactionStatus(
 }
 
 export function useTransactionStatus(
-    signature: TransactionSignature | undefined
+    signature: TransactionSignature | undefined,
 ): Cache.CacheEntry<TransactionStatus> | undefined {
     const context = React.useContext(StateContext);
 
@@ -131,11 +124,7 @@ export function useTransactionStatus(
         throw new Error(`useTransactionStatus must be used within a TransactionsProvider`);
     }
 
-    if (signature === undefined) {
-        return undefined;
-    }
-
-    return context.entries[signature];
+    return useCacheEntry(context.entries, signature);
 }
 
 export function useFetchTransactionStatus() {
@@ -149,6 +138,6 @@ export function useFetchTransactionStatus() {
         (signature: TransactionSignature) => {
             fetchTransactionStatus(dispatch, signature, cluster, url);
         },
-        [dispatch, cluster, url]
+        [dispatch, cluster, url],
     );
 }

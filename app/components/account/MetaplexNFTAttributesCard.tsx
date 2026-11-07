@@ -3,9 +3,11 @@ import { LoadingCard } from '@components/common/LoadingCard';
 import { Account, isTokenProgramData } from '@providers/accounts';
 import React from 'react';
 
-import { getProxiedUri } from '@/app/features/metadata/utils';
 import { useCluster } from '@/app/providers/cluster';
 import { useCompressedNft } from '@/app/providers/compressed-nft';
+import { getProxiedUri } from '@/app/shared/lib/metadata-proxy';
+import { Card, CardHeader, CardTitle } from '@/app/shared/ui/Card';
+import { BaseTable } from '@/app/shared/ui/Table';
 
 interface Attribute {
     trait_type: string;
@@ -23,17 +25,20 @@ export function MetaplexNFTAttributesCard({ account, onNotFound }: { account?: A
         }
         return onNotFound();
     }
-    return <NormalMetaplexNFTAttributesCard metadataUri={parsedData.nftData.metadata.data.uri} />;
+    return <NormalMetaplexNFTAttributesCard metadataUri={parsedData.nftData.metadata.uri} />;
 }
 
-function NormalMetaplexNFTAttributesCard({ metadataUri }: { metadataUri: string }) {
+export function NormalMetaplexNFTAttributesCard({ metadataUri }: { metadataUri: string }) {
     const [attributes, setAttributes] = React.useState<Attribute[]>([]);
     const [status, setStatus] = React.useState<'loading' | 'success' | 'error'>('loading');
+    const [attempt, setAttempt] = React.useState(0);
 
-    async function fetchMetadataAttributes() {
+    async function fetchMetadataAttributes(isCancelled: () => boolean) {
         try {
-            const response = await fetch(getProxiedUri(metadataUri));
+            // The browser caches a proxy error response, so a retry must skip the cache.
+            const response = await fetch(getProxiedUri(metadataUri), attempt > 0 ? { cache: 'no-cache' } : undefined);
             const metadata = await response.json();
+            if (isCancelled()) return;
 
             // Verify if the attributes value is an array
             if (Array.isArray(metadata.attributes)) {
@@ -51,48 +56,59 @@ function NormalMetaplexNFTAttributesCard({ metadataUri }: { metadataUri: string 
             } else {
                 throw new Error('Attributes is not an array');
             }
-        } catch (error) {
-            setStatus('error');
+        } catch (_error) {
+            if (!isCancelled()) setStatus('error');
         }
     }
 
+    function retryAttributes() {
+        setStatus('loading');
+        setAttempt(count => count + 1);
+    }
+
     React.useEffect(() => {
-        fetchMetadataAttributes();
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        let cancelled = false;
+        setStatus('loading');
+        fetchMetadataAttributes(() => cancelled);
+        return () => {
+            cancelled = true;
+        };
+    }, [metadataUri, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
     if (status === 'loading') {
         return <LoadingCard />;
     }
 
     if (status === 'error') {
-        return <ErrorCard text="Failed to fetch attributes" />;
+        return <ErrorCard retry={retryAttributes} text="Failed to fetch attributes" />;
     }
 
     const attributesList: React.ReactNode[] = attributes.map(({ trait_type, value }) => {
         return (
-            <tr key={`${trait_type}:${value}`}>
-                <td>{trait_type}</td>
-                <td>{value}</td>
-            </tr>
+            <BaseTable.Row key={`${trait_type}:${value}`}>
+                <BaseTable.Cell>{trait_type}</BaseTable.Cell>
+                <BaseTable.Cell>{value}</BaseTable.Cell>
+            </BaseTable.Row>
         );
     });
 
     return (
-        <div className="card">
-            <div className="card-header align-items-center">
-                <h3 className="card-header-title">Attributes</h3>
-            </div>
-            <div className="table-responsive mb-0">
-                <table className="table table-sm table-nowrap card-table">
-                    <thead>
-                        <tr>
-                            <th className="text-muted w-1">Trait type</th>
-                            <th className="text-muted w-1">Value</th>
-                        </tr>
-                    </thead>
-                    <tbody className="list">{attributesList}</tbody>
-                </table>
-            </div>
-        </div>
+        <Card ui="dashkit">
+            <CardHeader ui="dashkit">
+                <CardTitle as="h3" ui="dashkit">
+                    Attributes
+                </CardTitle>
+            </CardHeader>
+            <BaseTable ui="dashkit" variant="card" nowrap>
+                <BaseTable.Head>
+                    {/* w-[1%] (not the usual w-px): two shrink columns share this table, and 1px vs 1% distributes leftover width differently */}
+                    <BaseTable.Row>
+                        <BaseTable.HeaderCell className="w-[1%] text-dk-gray-700">Trait type</BaseTable.HeaderCell>
+                        <BaseTable.HeaderCell className="w-[1%] text-dk-gray-700">Value</BaseTable.HeaderCell>
+                    </BaseTable.Row>
+                </BaseTable.Head>
+                <BaseTable.Body>{attributesList}</BaseTable.Body>
+            </BaseTable>
+        </Card>
     );
 }

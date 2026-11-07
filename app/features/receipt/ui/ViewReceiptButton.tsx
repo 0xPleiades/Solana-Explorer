@@ -1,0 +1,50 @@
+'use client';
+
+import type { TransactionWithMeta } from '@entities/transaction-data';
+import { useCluster } from '@providers/cluster';
+import Link from 'next/link';
+import { FileText } from 'react-feather';
+import useSWR from 'swr';
+
+import { Button } from '@/app/components/shared/ui/button';
+import { receiptAnalytics } from '@/app/shared/lib/analytics';
+
+import { isReceiptEnabled } from '../env';
+import { extractReceiptData } from '../model/receipt-data';
+
+interface ViewReceiptButtonProps {
+    signature: string;
+    receiptPath: string;
+    transactionWithMeta: TransactionWithMeta | null | undefined;
+}
+
+// FIXME: missing Storybook story — gated on NEXT_PUBLIC_RECEIPT_ENABLED + needs a populated transactionWithMeta to render.
+export function ViewReceiptButton({ signature, receiptPath, transactionWithMeta }: ViewReceiptButtonProps) {
+    const { cluster } = useCluster();
+
+    const { data: receiptResult } = useSWR(
+        isReceiptEnabled && transactionWithMeta ? ['receipt', signature, cluster] : null,
+        () => {
+            if (!transactionWithMeta) return undefined;
+            return extractReceiptData(transactionWithMeta, cluster);
+        },
+        { revalidateOnFocus: false },
+    );
+
+    if (!isReceiptEnabled || receiptResult?.kind !== 'ok') {
+        return null;
+    }
+
+    return (
+        <Button variant="outline" size="sm" asChild>
+            <Link
+                href={receiptPath}
+                onClick={() => receiptAnalytics.trackButtonClicked(signature)}
+                aria-label="View Receipt"
+            >
+                <FileText />
+                <span className="hidden sm:inline">View Receipt</span>
+            </Link>
+        </Button>
+    );
+}

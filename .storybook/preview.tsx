@@ -1,47 +1,7 @@
-import type { Preview } from '@storybook/react';
-import React, { useEffect } from 'react';
+import '@/app/styles/styles.css';
 
-import { Rubik } from 'next/font/google';
-import './layout.min.css'; // uncomment this line to see Dashkit styles. TODO: remove upon migrating from Dashkit to Tailwind
-import './dashkit-polyfill.css';
-import '@/app/styles.css';
+import { createPreview } from './create-preview';
 
-// Load font with display: swap for better loading behavior
-const rubikFont = Rubik({
-    display: 'swap',
-    preload: true,
-    subsets: ['latin'],
-    variable: '--explorer-default-font',
-    weight: ['300', '400', '700'],
-});
-
-const preview: Preview = {
-    parameters: {
-        backgrounds: {
-            values: [{ name: 'Dark', value: '#161a19' }],
-            default: 'Dark',
-        },
-        controls: {
-            matchers: {
-                color: /(background|color)$/i,
-                date: /Date$/i,
-            },
-        },
-    },
-    decorators: [
-        Story => {
-            // Add useEffect to ensure font is properly loaded
-            useEffect(() => {
-                document.getElementById('storybook-outer')?.classList.add(rubikFont.className);
-            }, [rubikFont]);
-
-            return (
-                <div id="storybook-outer" className={rubikFont.className}>
-                    <Story />
-                </div>
-            );
-        },
-    ],
-};
-
-export default preview;
+// MSW is opt-in: STORYBOOK_MSW=true registers the service worker so stories with
+// `parameters.msw.handlers` mock network calls. Off by default so normal runs are untouched.
+export default createPreview({ mswEnabled: process.env.STORYBOOK_MSW === 'true' });

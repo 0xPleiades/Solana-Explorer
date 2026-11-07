@@ -1,19 +1,20 @@
 import { Account, useAccountInfo, useFetchAccountInfo } from '@providers/accounts';
-import React from 'react';
-import ReactJson from 'react-json-view';
+import { FetchStatus } from '@providers/cache';
 import {
     Attestation as SasAttestation,
-    convertSasSchemaToBorshSchema,
     decodeSchema,
+    deserializeAttestationData,
     Schema as SasSchema,
-} from 'sas-lib';
+    SchemaDataType,
+} from '@solana/attestation';
+import React from 'react';
 
-import {
-    decodeAccount,
-    decodeWithType,
-    deserializeAttestationDataWithBorsh200,
-    isAttestationAccount,
-} from '@/app/utils/attestation-service';
+import { SolarizedJsonViewer as ReactJson } from '@/app/components/common/JsonViewer';
+import { LoadingCard } from '@/app/components/common/LoadingCard';
+import { toBase64, toHex } from '@/app/shared/lib/bytes';
+import { Logger } from '@/app/shared/lib/logger';
+import { Card, CardHeader, CardTitle } from '@/app/shared/ui/Card';
+import { decodeAccount, decodeWithType, isAttestationAccount } from '@/app/utils/attestation-service';
 import { mapToPublicKey } from '@/app/utils/kit-wrapper';
 
 export function AttestationDataCard({ account, onNotFound }: { account?: Account; onNotFound: () => never }) {
@@ -32,21 +33,35 @@ export function AttestationDataCard({ account, onNotFound }: { account?: Account
 }
 
 function SchemaCard({ schema }: { schema: SasSchema }) {
-    const borshSchema = convertSasSchemaToBorshSchema(schema);
+    const layout = Object.fromEntries(schema.fieldNames.map((name, i) => [name, SchemaDataType[schema.layout[i]]]));
     return (
-        <div className="card">
-            <div className="card-header">
-                <div className="row align-items-center">
-                    <div className="col">
-                        <h3 className="card-header-title">Schema Layout (Borsh)</h3>
-                    </div>
-                </div>
-            </div>
+        <Card ui="dashkit">
+            <CardHeader ui="dashkit">
+                <CardTitle as="h3" ui="dashkit">
+                    Schema Layout
+                </CardTitle>
+            </CardHeader>
 
-            <div className="card metadata-json-viewer m-4">
-                <ReactJson src={borshSchema['schema']} theme={'solarized'} style={{ padding: 25 }} name={false} />
-            </div>
-        </div>
+            {/* .string-value is emitted by the ReactJson library — the arbitrary variant scopes the break-all rule to its descendant nodes only. */}
+            <Card ui="dashkit" className="m-6 [&_.string-value]:break-all">
+                <ReactJson src={layout} style={{ padding: 25 }} name={false} />
+            </Card>
+        </Card>
+    );
+}
+
+/**
+ * `VecU8` fields hold binary blobs such as hashes, which decode to number
+ * arrays and render as one row per byte. Hex keeps them readable and matches
+ * how @solana/attestation surfaces the same content in a `String` field.
+ */
+function withByteFieldsAsHex(schema: SasSchema, data: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+        schema.fieldNames.map((name, index) => {
+            const value = data[name];
+            const isByteVector = schema.layout[index] === SchemaDataType.VecU8 && Array.isArray(value);
+            return [name, isByteVector ? `0x${toHex(Uint8Array.from(value as number[]))}` : value];
+        }),
     );
 }
 
@@ -59,33 +74,40 @@ function AttestationCard({ attestation }: { attestation: SasAttestation }) {
         }
     }, [schemaAccountInfo?.data, fetchAccountInfo, attestation.schema]);
 
+    const isFetchingSchema = !schemaAccountInfo || schemaAccountInfo.status === FetchStatus.Fetching;
+    if (isFetchingSchema) {
+        return <LoadingCard message="Loading attestation data" />;
+    }
+
     let decoded: any | null = null;
     try {
         if (schemaAccountInfo?.data) {
             const schema: SasSchema = decodeWithType(schemaAccountInfo.data, 'schema', decodeSchema)?.data.data;
-            decoded = deserializeAttestationDataWithBorsh200(schema, Uint8Array.from(attestation.data));
+            decoded = withByteFieldsAsHex(
+                schema,
+                deserializeAttestationData<Record<string, unknown>>(schema, Uint8Array.from(attestation.data)),
+            );
         }
     } catch (e) {
-        console.error(e);
+        Logger.error(e);
     }
 
     return (
-        <div className="card">
-            <div className="card-header">
-                <div className="row align-items-center">
-                    <div className="col">
-                        <h3 className="card-header-title">Attestation Data {decoded ? '' : 'Raw (Base64)'}</h3>
-                    </div>
-                </div>
-            </div>
+        <Card ui="dashkit">
+            <CardHeader ui="dashkit">
+                <CardTitle as="h3" ui="dashkit">
+                    Attestation Data {decoded ? '' : 'Raw (Base64)'}
+                </CardTitle>
+            </CardHeader>
 
             {decoded ? (
-                <div className="card metadata-json-viewer m-4">
-                    <ReactJson src={decoded} theme={'solarized'} style={{ padding: 25 }} name={false} />
-                </div>
+                // .string-value is emitted by the ReactJson library — the arbitrary variant scopes the break-all rule to its descendant nodes only.
+                <Card ui="dashkit" className="m-6 [&_.string-value]:break-all">
+                    <ReactJson src={decoded} style={{ padding: 25 }} name={false} />
+                </Card>
             ) : (
                 <div
-                    className="font-monospace"
+                    className="font-mono"
                     style={{
                         fontSize: '0.85rem',
                         lineHeight: '1.2',
@@ -96,9 +118,9 @@ function AttestationCard({ attestation }: { attestation: SasAttestation }) {
                         wordBreak: 'break-all',
                     }}
                 >
-                    {Buffer.from(attestation.data).toString('base64') || '(empty)'}
+                    {toBase64(new Uint8Array(attestation.data)) || '(empty)'}
                 </div>
             )}
-        </div>
+        </Card>
     );
 }

@@ -1,3 +1,4 @@
+import { getBase58Decoder, getBase58Encoder, isSignature, type Signature } from '@solana/kit';
 import {
     ParsedInstruction,
     ParsedTransaction,
@@ -7,9 +8,24 @@ import {
 } from '@solana/web3.js';
 import { Cluster } from '@utils/cluster';
 import { SerumMarketRegistry } from '@utils/serumMarketRegistry';
-import bs58 from 'bs58';
 
 import { LOADER_IDS, PROGRAM_INFO_BY_ID, SPECIAL_IDS, SYSVAR_IDS } from './programs';
+
+const BASE58_ENCODER = getBase58Encoder();
+const BASE58_DECODER = getBase58Decoder();
+
+/**
+ * Non-throwing signature check.
+ * Added because @solana/kit {@link isSignature} throws on a string with
+ * a character outside the base58 alphabet.
+ */
+export function isSignatureValid(value: string): value is Signature {
+    try {
+        return isSignature(value);
+    } catch {
+        return false;
+    }
+}
 
 export type TokenLabelInfo = {
     name?: string;
@@ -55,7 +71,7 @@ export function displayAddress(address: string, cluster: Cluster, tokenInfo?: To
 
 export function intoTransactionInstruction(
     tx: ParsedTransaction,
-    instruction: ParsedInstruction | PartiallyDecodedInstruction
+    instruction: ParsedInstruction | PartiallyDecodedInstruction,
 ): TransactionInstruction | undefined {
     const message = tx.message;
     if ('parsed' in instruction) return;
@@ -72,7 +88,7 @@ export function intoTransactionInstruction(
     }
 
     return new TransactionInstruction({
-        data: bs58.decode(instruction.data),
+        data: Buffer.from(BASE58_ENCODER.encode(instruction.data)),
         keys: keys,
         programId: instruction.programId,
     });
@@ -94,6 +110,6 @@ export function intoParsedTransaction(tx: Transaction): ParsedTransaction {
             })),
             recentBlockhash: message.recentBlockhash,
         },
-        signatures: tx.signatures.map(value => bs58.encode(value.signature as any)),
+        signatures: tx.signatures.map(value => BASE58_DECODER.decode(value.signature as Uint8Array)),
     };
 }

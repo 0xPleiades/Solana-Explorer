@@ -1,0 +1,79 @@
+import { EVerificationSource, VerificationSource, type VerificationTarget } from '../lib/types';
+import { CoingeckoStatus, useCoinGeckoVerification } from './use-coingecko';
+import { JupiterStatus, useJupiterVerification } from './use-jupiter';
+import { getRiskLevel, RugCheckStatus, useRugCheckVerification } from './use-rugcheck';
+
+export type TokenVerificationResult = {
+    rateLimitedSources: VerificationSource[];
+    sources: VerificationSource[];
+    sourcesToApply: VerificationSource[];
+    verificationFoundSources: VerificationSource[];
+};
+
+export function useTokenVerification({
+    address,
+    isTokenMint,
+    solflareVerified,
+}: VerificationTarget): TokenVerificationResult {
+    const coinInfo = useCoinGeckoVerification(address, isTokenMint);
+    const jupiterInfo = useJupiterVerification(address);
+    const rugCheckInfo = useRugCheckVerification(address);
+
+    const coingeckoVerified = coinInfo?.status === CoingeckoStatus.Success && coinInfo.verified;
+    const jupiterVerified = jupiterInfo?.status === JupiterStatus.Success && jupiterInfo.verified;
+    const rugCheckVerified = rugCheckInfo?.status === RugCheckStatus.Success && rugCheckInfo.verified;
+
+    const rugCheckScore = rugCheckInfo?.status === RugCheckStatus.Success ? rugCheckInfo.score : undefined;
+    const rugCheckLevel = rugCheckScore !== undefined ? getRiskLevel(rugCheckScore) : undefined;
+
+    // CoinGecko web pages are keyed by coin id (e.g. /en/coins/usd-coin). The
+    // legacy /coins/solana/contract/<address> path 404s on the website. When the
+    // token isn't listed on coingecko.com there is no coin id, so fall back to the
+    // GeckoTerminal token page — the actual source of the gt_verified signal.
+    const coinGeckoId = coinInfo?.status === CoingeckoStatus.Success ? coinInfo.coinGeckoId : undefined;
+
+    const sources: VerificationSource[] = [
+        {
+            applyUrl:
+                'https://support.coingecko.com/hc/en-us/articles/23725417857817-Verification-Guide-for-Listing-Update-Requests-on-CoinGecko',
+            isRateLimited: coinInfo?.status === CoingeckoStatus.RateLimited,
+            isVerificationFound: coinInfo?.status === CoingeckoStatus.Success,
+            name: EVerificationSource.CoinGecko,
+            url: coinGeckoId
+                ? `https://www.coingecko.com/en/coins/${coinGeckoId}`
+                : `https://www.geckoterminal.com/solana/tokens/${address}`,
+            verified: coingeckoVerified,
+        },
+        {
+            applyUrl: 'https://verified.jup.ag/tokens',
+            isRateLimited: jupiterInfo?.status === JupiterStatus.RateLimited,
+            isVerificationFound: jupiterInfo?.status === JupiterStatus.Success,
+            name: EVerificationSource.Jupiter,
+            url: `https://jup.ag/tokens/${address}`,
+            verified: jupiterVerified,
+        },
+        {
+            applyUrl: 'https://help.solflare.com/en/articles/9260147-i-cannot-find-a-token-in-solflare',
+            isVerificationFound: solflareVerified !== undefined,
+            name: EVerificationSource.Solflare,
+            url: `https://www.solflare.com/prices/${address}`,
+            verified: solflareVerified ?? false,
+        },
+        {
+            applyUrl: 'https://rugcheck.xyz/verify/token',
+            isRateLimited: rugCheckInfo?.status === RugCheckStatus.RateLimited,
+            isVerificationFound: rugCheckInfo?.status === RugCheckStatus.Success,
+            level: rugCheckLevel,
+            name: EVerificationSource.RugCheck,
+            score: rugCheckScore,
+            url: `https://rugcheck.xyz/tokens/${address}`,
+            verified: rugCheckVerified,
+        },
+    ];
+
+    const rateLimitedSources = sources.filter(s => s.isRateLimited);
+    const sourcesToApply = sources.filter(s => !s.verified && !s.isVerificationFound && !s.isRateLimited);
+    const verificationFoundSources = sources.filter(s => s.isVerificationFound);
+
+    return { rateLimitedSources, sources, sourcesToApply, verificationFoundSources };
+}

@@ -1,38 +1,4 @@
-import { useSearchParams } from 'next/navigation';
-import { useMemo } from 'react';
-
-type Config = Readonly<{
-    additionalParams?: { get(key: string): string | null; toString(): string };
-    pathname: string;
-}>;
-
-export function useClusterPath({ additionalParams, pathname }: Config) {
-    const currentSearchParams = useSearchParams();
-    const [pathnameWithoutHash, hash] = pathname.split('#');
-    return useMemo(
-        () =>
-            pickClusterParams(pathnameWithoutHash, currentSearchParams ?? undefined, additionalParams) +
-            (hash ? `#${hash}` : ''),
-        [additionalParams, currentSearchParams, hash, pathnameWithoutHash]
-    );
-}
-
-export function pickClusterParams(
-    pathname: string,
-    currentSearchParams?: { toString(): string; get(key: string): string | null },
-    additionalParams?: { get(key: string): string | null }
-): string {
-    let nextSearchParams = additionalParams ? new URLSearchParams(additionalParams.toString()) : undefined;
-    if (currentSearchParams && !!currentSearchParams.toString()) {
-        // Pick the params we care about
-        ['cluster', 'customUrl'].forEach(paramName => {
-            const existingValue = currentSearchParams.get(paramName);
-            if (existingValue) {
-                nextSearchParams ||= new URLSearchParams();
-                nextSearchParams.set(paramName, existingValue);
-            }
-        });
-    }
-    const queryString = nextSearchParams?.toString();
-    return `${pathname}${queryString ? `?${queryString}` : ''}`;
-}
+// Cluster-preserving path building now lives in the `cluster` FSD entity — it is cluster-domain logic
+// (which of `cluster` and `customUrl` survive a navigation), not a generic URL utility. This file
+// re-exports it so the existing `@utils/url` import sites keep working unchanged.
+export { pickClusterParams, useBuildClusterPath, useClusterPath } from '@entities/cluster/model/use-cluster-path';

@@ -1,10 +1,11 @@
 'use client';
 
-import { useCluster } from '@providers/cluster';
-import { createSolanaRpc } from '@solana/kit';
+import { getRpc, useCluster } from '@providers/cluster';
 import { Cluster } from '@utils/cluster';
 import useTabVisibility from '@utils/use-tab-visibility';
 import React from 'react';
+
+import { Logger } from '@/app/shared/lib/logger';
 
 import { DashboardInfo, DashboardInfoActionType, dashboardInfoReducer, EpochInfo } from './solanaDashboardInfo';
 import {
@@ -29,7 +30,7 @@ export enum ClusterStatsStatus {
 }
 
 const initialPerformanceInfo: PerformanceInfo = {
-    avgTps: 0,
+    avgTps: null,
     historyMaxTps: 0,
     perfHistory: {
         long: [],
@@ -41,8 +42,6 @@ const initialPerformanceInfo: PerformanceInfo = {
 };
 
 const initialDashboardInfo: DashboardInfo = {
-    avgSlotTime_1h: 0,
-    avgSlotTime_1min: 0,
     epochInfo: {
         absoluteSlot: BigInt(0),
         blockHeight: BigInt(0),
@@ -50,38 +49,45 @@ const initialDashboardInfo: DashboardInfo = {
         slotIndex: BigInt(0),
         slotsInEpoch: BigInt(0),
     },
+    msPerSlot_1h: 0,
     status: ClusterStatsStatus.Loading,
 };
 
 type SetActive = React.Dispatch<React.SetStateAction<boolean>>;
-const StatsProviderContext = React.createContext<
-    | {
-          setActive: SetActive;
-          setTimedOut: () => void;
-          retry: () => void;
-          active: boolean;
-      }
-    | undefined
+type StatsProviderState = {
+    setActive: SetActive;
+    setTimedOut: () => void;
+    retry: () => void;
+    active: boolean;
+};
+export const StatsProviderContext: React.Context<StatsProviderState | undefined> = React.createContext<
+    StatsProviderState | undefined
 >(undefined);
 
 type DashboardState = { info: DashboardInfo };
-const DashboardContext = React.createContext<DashboardState | undefined>(undefined);
+export const DashboardContext: React.Context<DashboardState | undefined> = React.createContext<
+    DashboardState | undefined
+>(undefined);
 
 type PerformanceState = { info: PerformanceInfo };
-const PerformanceContext = React.createContext<PerformanceState | undefined>(undefined);
+export const PerformanceContext: React.Context<PerformanceState | undefined> = React.createContext<
+    PerformanceState | undefined
+>(undefined);
 
 type Props = { children: React.ReactNode };
 
 export function SolanaClusterStatsProvider({ children }: Props) {
-    const { cluster, url } = useCluster();
+    const { cluster, connectableUrl, url } = useCluster();
     const [active, setActive] = React.useState(false);
     const [dashboardInfo, dispatchDashboardInfo] = React.useReducer(dashboardInfoReducer, initialDashboardInfo);
     const [performanceInfo, dispatchPerformanceInfo] = React.useReducer(performanceInfoReducer, initialPerformanceInfo);
     const { visible: isTabVisible } = useTabVisibility();
     React.useEffect(() => {
-        if (!active || !isTabVisible || !url) return;
+        // `url` always resolves, so guarding on it polls the fallback endpoint while a custom URL is still
+        // awaiting consent — a node the visitor never chose. `connectableUrl` is absent until that settles.
+        if (!active || !isTabVisible || !connectableUrl) return;
 
-        const rpc = createSolanaRpc(url);
+        const rpc = getRpc(connectableUrl);
 
         let lastSlot: bigint | null = null;
         let stale = false;
@@ -114,7 +120,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
                 });
             } catch (error) {
                 if (cluster !== Cluster.Custom) {
-                    console.error(error, { url });
+                    Logger.error(error, { url });
                 }
                 if (error instanceof Error) {
                     dispatchPerformanceInfo({
@@ -142,7 +148,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
                 });
             } catch (error) {
                 if (cluster !== Cluster.Custom) {
-                    console.error(error, { url });
+                    Logger.error(error, { url });
                 }
                 if (error instanceof Error) {
                     dispatchPerformanceInfo({
@@ -176,7 +182,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
                 });
             } catch (error) {
                 if (cluster !== Cluster.Custom) {
-                    console.error(error, { url });
+                    Logger.error(error, { url });
                 }
                 if (error instanceof Error) {
                     dispatchDashboardInfo({
@@ -203,7 +209,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
                         },
                         type: DashboardInfoActionType.SetLastBlockTime,
                     });
-                } catch (error) {
+                } catch (_error) {
                     // let this fail gracefully
                 }
             }
@@ -228,7 +234,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
             clearInterval(blockTimeInterval);
             stale = true;
         };
-    }, [active, cluster, isTabVisible, url]);
+    }, [active, cluster, connectableUrl, isTabVisible, url]);
 
     // Reset when cluster changes
     React.useEffect(() => {
@@ -257,7 +263,7 @@ export function SolanaClusterStatsProvider({ children }: Props) {
             data: 'Cluster stats timed out',
             type: PerformanceInfoActionType.SetError,
         });
-        console.error('Cluster stats timed out');
+        Logger.error(new Error('[providers:cluster-stats] Cluster stats timed out'));
         setActive(false);
     }, []);
 
